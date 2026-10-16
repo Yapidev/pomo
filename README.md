@@ -11,6 +11,7 @@ dependencies beyond `coreutils`, `tput` (ncurses) and `notify-send`.
 - Horizontal progress bar (`▓` filled / `░` remaining)
 - Unicode box border around the timer
 - Per-mode colors: focus = green/cyan, short break = yellow, long break = blue/magenta
+- Color themes: `pomo theme <name>`, or cycle them live from the menu with `c`
 - Flicker-free redraw (ANSI cursor-home, no full-screen clear per tick)
 - Non-blocking key input: `p` pause, `s` skip, `q` quit
 - Automatic cycle: every 4th completed focus session earns a long break,
@@ -34,6 +35,8 @@ pomo start        # same as above
 pomo -w           # short break (5 minutes)
 pomo -W           # long break (15 minutes)
 pomo stats        # session statistics
+pomo theme        # show the current theme and list all themes
+pomo theme nord   # switch to the nord theme (persisted)
 pomo update       # update to the latest version from GitHub
 pomo --help       # usage help
 pomo --version    # version
@@ -57,6 +60,7 @@ Menu (opened with `m`, the timer is frozen while it is open):
 | `3` | Start a long break                      |
 | `h` | Help                                    |
 | `t` | Session statistics                      |
+| `c` | Cycle the color theme (applied live)    |
 | `b` | Back to the timer (Enter works too)     |
 | `q` | Quit                                    |
 
@@ -82,6 +86,29 @@ Change the defaults by editing those lines, or override per run:
 ```console
 POMO_FOCUS_SECONDS=1800 pomo    # 30 minute focus session
 ```
+
+## Themes
+
+Seven color themes are built in:
+
+| Theme      | Look                                    |
+|------------|-----------------------------------------|
+| `default`  | Bright green/cyan on a black terminal   |
+| `dracula`  | Purple, pink and cyan (Dracula palette) |
+| `gruvbox`  | Warm orange and olive tones             |
+| `nord`     | Cool blues and snow (Nord palette)     |
+| `solarized` | Muted Solarized-dark accents          |
+| `matrix`   | Everything glowing green                |
+| `mono`     | No colors at all                        |
+
+Pick one:
+
+```console
+pomo theme nord      # persisted in ~/.config/pomo/theme
+POMO_THEME=nord pomo # override for a single run
+```
+
+Or press `c` inside the menu to cycle themes while a session is running.
 
 ## Data
 
@@ -181,9 +208,10 @@ Run the test suite (pure Bash, no framework needed):
 tests/run_tests.sh
 ```
 
-It covers the CLI surface (`--version`, `--help`, `stats`), history
-aggregation (including corrupted lines), duration validation, and the
-self-update guard. The TUI itself is interactive and not covered by it.
+It covers the CLI surface (`--version`, `--help`, `stats`, `theme`), history
+aggregation (including corrupted lines), duration validation, the theme
+engine, and the self-update guard. The TUI itself is interactive and not
+covered by it.
 
 ## License
 

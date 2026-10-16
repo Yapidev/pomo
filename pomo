@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ================================ KONSTANTA =================================
 
-readonly POMO_VERSION="1.1.0"
+readonly POMO_VERSION="1.2.0"
 
 # URL script mentah di GitHub; dipakai oleh subcommand "update"
 readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
@@ -33,6 +33,10 @@ readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
 # Direktori data mengikuti XDG; fallback ke ~/.local/share
 readonly DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pomo"
 readonly HISTORY_FILE="$DATA_DIR/history.log"
+
+# Konfigurasi tema juga mengikuti XDG; fallback ke ~/.config
+readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pomo"
+readonly THEME_FILE="$CONFIG_DIR/theme"
 
 # Durasi sesi dalam DETIK. Bisa dioverride lewat environment:
 #   POMO_FOCUS_SECONDS, POMO_SHORT_BREAK_SECONDS, POMO_LONG_BREAK_SECONDS
@@ -54,7 +58,10 @@ readonly MIN_ROWS=17
 
 E=$'\033'   # escape character
 
+# Warna hanya aktif jika stdout adalah tty
+COLOR_ENABLED=0
 if [[ -t 1 ]]; then
+    COLOR_ENABLED=1
     C_RESET=$'\033[0m';  C_BOLD=$'\033[1m';  C_DIM=$'\033[2m'
     C_GREEN=$'\033[92m'; C_YELLOW=$'\033[93m'; C_BLUE=$'\033[94m'
     C_MAGENTA=$'\033[95m'; C_CYAN=$'\033[96m'; C_WHITE=$'\033[97m'
@@ -69,6 +76,114 @@ C_TITLE=''
 C_DIGITS=''
 C_BORDER=''
 C_BAR=''
+
+# ================================ TEMAS ======================================
+# Sebuah tema = palet warna 256-color. Warna per-mode (focus/break) tetap
+# dipetakan oleh set_mode_colors(); tema hanya menimpa palet dasarnya,
+# jadi semua tema konsisten dengan identitas: fokus hijau/cyan, break
+# pendek kuning, break panjang biru/magenta.
+
+# Nama tema aktif; diisi oleh load_theme() atau subcommand "theme"
+THEME_NAME='default'
+# Diset ke 1 saat tema berganti dari menu, agar timer digambar ulang
+THEME_CHANGED=0
+# Mode sesi yang sedang berjalan (focus|short_break|long_break);
+# dipakai untuk menerapkan ulang warna mode setelah ganti tema
+CURRENT_MODE=''
+
+readonly -a THEME_NAMES=(default dracula gruvbox nord solarized matrix mono)
+
+theme_valid() {
+    local t
+    for t in "${THEME_NAMES[@]}"; do
+        if [[ $1 == "$t" ]]; then return 0; fi
+    done
+    return 1
+}
+
+set_palette() {
+    # $1..$6 = kode warna 256 untuk: green yellow blue magenta cyan white.
+    # String kosong = tanpa warna (tema mono). No-op bila warna nonaktif.
+    if (( ! COLOR_ENABLED )); then
+        return 0
+    fi
+    local v
+    for v in "$1" "$2" "$3" "$4" "$5" "$6"; do
+        if [[ -n $v && ! $v =~ ^[0-9]{1,3}$ ]]; then
+            die "internal error: invalid 256-color code '$v'"
+        fi
+    done
+    if [[ -n $1 ]]; then C_GREEN=$'\033[38;5;'"$1"'m';   else C_GREEN='';   fi
+    if [[ -n $2 ]]; then C_YELLOW=$'\033[38;5;'"$2"'m';  else C_YELLOW='';  fi
+    if [[ -n $3 ]]; then C_BLUE=$'\033[38;5;'"$3"'m';    else C_BLUE='';    fi
+    if [[ -n $4 ]]; then C_MAGENTA=$'\033[38;5;'"$4"'m'; else C_MAGENTA=''; fi
+    if [[ -n $5 ]]; then C_CYAN=$'\033[38;5;'"$5"'m';    else C_CYAN='';    fi
+    if [[ -n $6 ]]; then C_WHITE=$'\033[38;5;'"$6"'m';    else C_WHITE='';   fi
+}
+
+apply_theme() {
+    # Terapkan palet tema $1 (default: THEME_NAME aktif)
+    local t=${1:-$THEME_NAME}
+    case $t in
+        default)   set_palette 92 93 94 95 96 97 ;;
+        dracula)   set_palette 120 213 117 141 117 255 ;;
+        gruvbox)   set_palette 114 214 109 175 108 223 ;;
+        nord)      set_palette 108 222 110 139 110 254 ;;
+        solarized) set_palette 100 136 33 125 37 230 ;;
+        matrix)    set_palette 92 46 40 46 92 46 ;;
+        mono)      set_palette '' '' '' '' '' '' ;;
+    esac
+    THEME_NAME=$t
+}
+
+cycle_theme() {
+    # Pindah ke tema berikutnya (dipakai oleh tombol menu 'c')
+    local i len=${#THEME_NAMES[@]}
+    for (( i = 0; i < len; i++ )); do
+        if [[ ${THEME_NAMES[i]} == "$THEME_NAME" ]]; then
+            apply_theme "${THEME_NAMES[$(( (i + 1) % len ))]}"
+            THEME_CHANGED=1
+            return
+        fi
+    done
+}
+
+load_theme() {
+    # Prioritas: env POMO_THEME > file konfigurasi > default.
+    local saved=''
+    THEME_NAME=${POMO_THEME:-}
+    if [[ -z $THEME_NAME && -f $THEME_FILE ]]; then
+        IFS= read -r saved < "$THEME_FILE" || saved=''
+        THEME_NAME=$saved
+    fi
+    if [[ -z $THEME_NAME ]]; then
+        THEME_NAME=default
+    fi
+    if ! theme_valid "$THEME_NAME"; then
+        die "unknown theme: '$THEME_NAME'" \
+            "Available themes: ${THEME_NAMES[*]} (edit or remove $THEME_FILE)"
+    fi
+    apply_theme "$THEME_NAME"
+}
+
+save_theme() {
+    mkdir -p "$CONFIG_DIR"
+    printf '%s\n' "$THEME_NAME" > "$THEME_FILE"
+}
+
+show_theme() {
+    printf 'Current theme : %s\n' "$THEME_NAME"
+    printf 'Available themes:\n'
+    local t
+    for t in "${THEME_NAMES[@]}"; do
+        if [[ $t == "$THEME_NAME" ]]; then
+            printf '  %s%s%s (current)\n' "$C_BOLD" "$t" "$C_RESET"
+        else
+            printf '  %s\n' "$t"
+        fi
+    done
+    printf 'Switch with: pomo theme <name>  (or export POMO_THEME=<name>)\n'
+}
 
 # ============================ FONT BLOCK TIMER ==============================
 # Setiap glyph = 5 baris x 5 kolom. Untuk aman di semua locale (C/POSIX
@@ -414,6 +529,7 @@ KEY_HELP=(
     '  3   Start a long break'
     '  h   Help'
     '  t   Session statistics'
+    '  c   Cycle the color theme'
     '  b   Back to the timer'
     '  q   Quit'
 )
@@ -469,6 +585,7 @@ open_menu() {
             ''
             '[h] Help'
             '[t] Stats'
+            "[c] Cycle theme (now: $THEME_NAME)"
             ''
             '[b] Back to timer'
             '[q] Quit'
@@ -486,6 +603,7 @@ open_menu() {
             3)     MENU_RESULT='long_break' ;;
             h|H|'?') show_help_overlay ;;
             t|T)   show_stats_overlay ;;
+            c|C)   cycle_theme ;;
             b|B|m|M|'') MENU_RESULT='back' ;;   # Enter juga kembali
             q|Q)   MENU_RESULT='quit' ;;
         esac
@@ -568,6 +686,11 @@ run_timer() {
                 paused=1
                 MENU_RESULT=''
                 open_menu
+                if (( THEME_CHANGED )); then
+                    # Tema berganti dari menu: terapkan ulang warna mode
+                    set_mode_colors "$CURRENT_MODE"
+                    THEME_CHANGED=0
+                fi
                 case $MENU_RESULT in
                     focus)       return 5 ;;
                     short_break) return 3 ;;
@@ -639,6 +762,7 @@ run_cycle() {
     while :; do
         duration=$(mode_duration "$mode")
         label=$(mode_label "$mode")
+        CURRENT_MODE=$mode
         set_mode_colors "$mode"
 
         rc=0
@@ -815,6 +939,8 @@ Usage:
   pomo -w             Start a short break (5 minutes)
   pomo -W             Start a long break (15 minutes)
   pomo stats          Show session statistics
+  pomo theme [name]   Show the current theme, or set the theme
+  pomo themes         Same as "pomo theme"
   pomo update         Update to the latest version from GitHub
   pomo --help         Show this help
   pomo --version      Show version
@@ -841,6 +967,12 @@ Configuration:
     POMO_FOCUS_SECONDS          default 1500  (25 min)
     POMO_SHORT_BREAK_SECONDS    default 300   (5 min)
     POMO_LONG_BREAK_SECONDS     default 900   (15 min)
+    POMO_THEME                  color theme, e.g. nord
+
+Themes:
+  Available themes: default, dracula, gruvbox, nord, solarized, matrix, mono
+  Pick one with "pomo theme <name>" (saved in ~/.config/pomo/theme),
+  override per run with POMO_THEME, or cycle themes from the menu with 'c'.
 EOF
 }
 
@@ -912,6 +1044,7 @@ self_update() {
 # ================================== MAIN ====================================
 
 main() {
+    load_theme
     local cmd=${1:-}
     case $cmd in
         ''|start)
@@ -928,6 +1061,18 @@ main() {
             ;;
         update)
             self_update "$(resolve_self)"
+            ;;
+        theme|themes)
+            if [[ -n ${2:-} ]]; then
+                if ! theme_valid "$2"; then
+                    die "unknown theme: '$2'" "Available themes: ${THEME_NAMES[*]}"
+                fi
+                THEME_NAME=$2
+                save_theme
+                printf 'Theme set to %s (saved in %s).\n' "$THEME_NAME" "$THEME_FILE"
+            else
+                show_theme
+            fi
             ;;
         -h|--help|help)
             show_help
