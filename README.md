@@ -55,11 +55,27 @@ $ pomo --version    # version
 
 Keys while the timer is running:
 
-| Key | Action           |
-|-----|------------------|
-| `p` | Pause / resume   |
-| `s` | Skip session     |
-| `q` | Quit             |
+| Key | Action                                |
+|-----|---------------------------------------|
+| `p` | Pause / resume                        |
+| `s` | Skip session                          |
+| `m` | Open the menu                         |
+| `q` | Quit                                  |
+
+Menu (opened with `m`, the timer is frozen while it is open):
+
+| Key | Action                                  |
+|-----|-----------------------------------------|
+| `1` | Start a focus session                   |
+| `2` | Start a short break                     |
+| `3` | Start a long break                      |
+| `h` | Help                                    |
+| `t` | Session statistics                      |
+| `b` | Back to the timer (Enter works too)     |
+| `q` | Quit                                    |
+
+Switching sessions from the menu abandons the current session without
+logging it, exactly like `s` (skip).
 
 Sessions are only logged when they complete — a skipped session writes
 nothing.
