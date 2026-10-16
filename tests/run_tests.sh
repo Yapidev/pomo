@@ -47,11 +47,12 @@ assert_eq() {
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+export XDG_CONFIG_HOME="$TMP/config"
 
 # --------------------------------------------------------------- version
 out=$(bash "$POMO" --version 2>&1)
 assert_contains '--version mencetak nama dan versi' "$out" 'pomo '
-assert_contains '--version cocok dengan changelog 1.1.0' "$out" 'pomo 1.1.0'
+assert_contains '--version cocok dengan changelog 1.2.0' "$out" 'pomo 1.2.0'
 
 # ------------------------------------------------------------------ help
 out=$(bash "$POMO" --help 2>&1)
@@ -59,6 +60,8 @@ assert_contains '--help mencetak usage' "$out" 'Usage:'
 assert_contains '--help menyebut subcommand stats' "$out" 'pomo stats'
 assert_contains '--help menyebut subcommand update' "$out" 'pomo update'
 assert_contains '--help menyebut tombol pause' "$out" 'Pause / resume'
+assert_contains '--help menyebut subcommand theme' "$out" 'pomo theme'
+assert_contains '--help menyebut daftar tema' "$out" 'Available themes: default, dracula'
 
 # ------------------------------------------------------ stats tanpa data
 export XDG_DATA_HOME="$TMP/data-empty"
@@ -95,6 +98,66 @@ assert_contains 'stats: baris rusak diabaikan' "$out" 'Focus sessions : 2'
 out=$(bash "$POMO" bogus 2>&1); rc=$?
 assert_eq 'perintah tidak dikenal: exit code 1' "$rc" '1'
 assert_contains 'perintah tidak dikenal: pesan error' "$out" "unknown command or option: 'bogus'"
+
+# ---------------------------------------------------------------- theme
+out=$(bash "$POMO" theme 2>&1)
+assert_contains 'theme tanpa argumen: tema aktif' "$out" 'Current theme : default'
+assert_contains 'theme tanpa argumen: daftar semua tema' "$out" 'dracula'
+assert_contains 'theme tanpa argumen: daftar tema mono' "$out" 'mono'
+
+out=$(bash "$POMO" theme nord 2>&1); rc=$?
+assert_eq 'theme nord: exit code 0' "$rc" '0'
+assert_contains 'theme nord: konfirmasi' "$out" 'Theme set to nord'
+assert_contains 'theme nord: tersimpan di file config' "$(cat "$XDG_CONFIG_HOME/pomo/theme")" 'nord'
+
+out=$(bash "$POMO" theme 2>&1)
+assert_contains 'theme tersimpan dibaca ulang' "$out" 'Current theme : nord'
+
+out=$(POMO_THEME=matrix bash "$POMO" theme 2>&1)
+assert_contains 'POMO_THEME meng-override file config' "$out" 'Current theme : matrix'
+
+out=$(bash "$POMO" theme bogus 2>&1); rc=$?
+assert_eq 'theme tidak dikenal: exit code 1' "$rc" '1'
+assert_contains 'theme tidak dikenal: pesan error' "$out" "unknown theme: 'bogus'"
+assert_contains 'theme tidak dikenal: daftar tema disebut' "$out" 'Available themes:'
+
+printf 'ga-fdak\n' > "$XDG_CONFIG_HOME/pomo/theme"
+out=$(bash "$POMO" --version 2>&1); rc=$?
+assert_eq 'file config tema rusak: exit code 1' "$rc" '1'
+assert_contains 'file config tema rusak: pesan error' "$out" "unknown theme: 'ga-fdak'"
+rm -f "$XDG_CONFIG_HOME/pomo/theme"
+
+# --------------------------------------------- unit: apply_theme + cycle_theme
+unit_rc=0
+(
+    set -e
+    export XDG_DATA_HOME="$TMP/data-theme"
+    source "$POMO"
+
+    COLOR_ENABLED=1
+    apply_theme dracula
+    [[ $THEME_NAME == dracula ]]
+    [[ $C_GREEN == $'\033[38;5;120m' ]]
+    [[ $C_WHITE == $'\033[38;5;255m' ]]
+
+    apply_theme mono
+    [[ -z $C_GREEN && -z $C_YELLOW && -z $C_WHITE ]]
+
+    apply_theme default
+    cycle_theme
+    [[ $THEME_NAME == dracula && $THEME_CHANGED == 1 ]]
+    cycle_theme
+    [[ $THEME_NAME == gruvbox ]]
+
+    apply_theme matrix
+    set_mode_colors focus
+    [[ $C_DIGITS == $'\033[38;5;92m' ]]
+
+    theme_valid nord
+    ! theme_valid bogus
+) || unit_rc=$?
+assert_eq 'apply_theme + cycle_theme + set_mode_colors: benar' "$unit_rc" '0'
+
 
 # --------------------------------------------------- validasi durasi < 0
 out=$(POMO_FOCUS_SECONDS=0 bash "$POMO" start 2>&1); rc=$?
