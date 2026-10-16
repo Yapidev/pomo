@@ -34,6 +34,7 @@ pomo start        # same as above
 pomo -w           # short break (5 minutes)
 pomo -W           # long break (15 minutes)
 pomo stats        # session statistics
+pomo update       # update to the latest version from GitHub
 pomo --help       # usage help
 pomo --version    # version
 ```
@@ -133,7 +134,9 @@ Notes:
 - The URL tracks the `main` branch, so the one-liner always installs the
   latest version. To pin a release, replace `main` with a tag
   (`https://raw.githubusercontent.com/Yapidev/pomodoro_cli/v1.0.0/pomo`).
-- Updating = re-running the same command; the file is simply overwritten.
+- Updating = run `pomo update` (downloads the latest version from GitHub and
+  replaces itself), or simply re-run the install command above — the file is
+  overwritten either way. Session history is never touched.
 - Uninstalling = `rm ~/.local/bin/pomo`. Your session history in
   `~/.local/share/pomo/` is left untouched.
 - Prefer to inspect what you run? It is one plain Bash file:
