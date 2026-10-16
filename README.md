@@ -173,6 +173,18 @@ Full debhelper build is also available inside `debian/`:
 dpkg-buildpackage -us -uc
 ```
 
+## Development
+
+Run the test suite (pure Bash, no framework needed):
+
+```console
+tests/run_tests.sh
+```
+
+It covers the CLI surface (`--version`, `--help`, `stats`), history
+aggregation (including corrupted lines), duration validation, and the
+self-update guard. The TUI itself is interactive and not covered by it.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
