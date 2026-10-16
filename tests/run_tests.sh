@@ -52,7 +52,7 @@ export XDG_CONFIG_HOME="$TMP/config"
 # --------------------------------------------------------------- version
 out=$(bash "$POMO" --version 2>&1)
 assert_contains '--version mencetak nama dan versi' "$out" 'pomo '
-assert_contains '--version cocok dengan changelog 1.2.2' "$out" 'pomo 1.2.2'
+assert_contains '--version cocok dengan changelog 1.2.3' "$out" 'pomo 1.2.3'
 
 # ------------------------------------------------------------------ help
 out=$(bash "$POMO" --help 2>&1)
@@ -146,8 +146,13 @@ unit_rc=0
     apply_theme default
     cycle_theme
     [[ $THEME_NAME == dracula && $THEME_CHANGED == 1 ]]
+    [[ $(<"$THEME_FILE") == dracula ]]   # langsung tersimpan saat 'c'
     cycle_theme
     [[ $THEME_NAME == gruvbox ]]
+
+    apply_theme dracula
+    set_mode_colors focus
+    [[ $C_DIGITS == $'\033[38;5;120m' ]]   # warna mode ikut tema baru
 
     apply_theme matrix
     set_mode_colors focus

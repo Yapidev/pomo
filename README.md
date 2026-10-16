@@ -96,7 +96,8 @@ pomo theme nord       # switch (saved in ~/.config/pomo/theme)
 POMO_THEME=matrix pomo # just for this one run
 ```
 
-Or press `c` in the menu to flip through them live.
+Or press `c` in the menu to flip through them live — each pick is
+saved automatically.
 
 ## Custom durations
 
