@@ -261,7 +261,7 @@ draw_ui() {
         timer_rows[r]=$seg
     done
 
-    local time_w=$(( 6 * 5 + 5 ))    # 6 glyph x 5 kolom + 5 spasi pemisah = 35
+    local time_w=$(( 5 * 5 + 4 ))    # 5 glyph (MM:SS) x 5 kolom + 4 spasi pemisah = 29
     local inner=$(( time_w + 2 ))
     local box_w=$(( inner + 2 ))
     local hbar
