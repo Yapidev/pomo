@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ================================ KONSTANTA =================================
 
-readonly POMO_VERSION="1.3.0"
+readonly POMO_VERSION="1.3.1"
 
 # URL script mentah di GitHub; dipakai oleh subcommand "update"
 readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
@@ -346,9 +346,10 @@ pixel_anim() {
     # Animasi piksel untuk satu baris glyph digit.
     # $1 baris glyph, $2 indeks glyph ke-0, $3 nomor baris glyph (0-4),
     # $4 reveal 0-100 (persen piksel yang sudah "menyala"), $5 tick.
-    # Piksel yang belum terungkap jadi spasi; sebagian kecil piksel
-    # terungkap digambar '▒' agar terlihat berkelip. Posisi kelip
-    # bergeser tiap tick sehingga fontnya terasa "hidup".
+    # Piksel yang belum terungkap jadi spasi. Kelip dibuat SANGAT halus:
+    # hanya piksel dengan hash tepat satu nilai yang digambar '▒', yaitu
+    # rata-rata SATU piksel per frame di seluruh timer, dan posisinya
+    # berpindah tiap tick — seperti kilau yang lewat, bukan glitch.
     local rowstr=$1 gi=$2 r=$3 reveal=$4 tick=$5
     local out='' pos ch h
     for (( pos = 0; pos < ${#rowstr}; pos++ )); do
@@ -360,7 +361,7 @@ pixel_anim() {
         h=$(( (gi * 31 + r * 17 + pos * 13 + tick * 7) % 100 ))
         if (( h >= reveal )); then
             out+=' '
-        elif (( h % 19 == 0 )); then
+        elif (( h == 50 )); then
             out+='▒'
         else
             out+='█'
