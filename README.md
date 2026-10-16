@@ -105,7 +105,12 @@ saved automatically.
 POMO_FOCUS_SECONDS=1800 pomo        # 30 min focus
 POMO_SHORT_BREAK_SECONDS=600 pomo -w # 10 min short break
 POMO_LONG_BREAK_SECONDS=1200 pomo -W # 20 min long break
+POMO_ANIMATION=off pomo             # disable the pixel animations
 ```
+
+The timer animates like a living pixel display: digits light up pixel by
+pixel at session start, a few pixels flicker every second, and the colon
+blinks — `POMO_ANIMATION=off` turns all of it off.
 
 ## Where is my data?
 
