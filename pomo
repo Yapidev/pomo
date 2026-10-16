@@ -25,7 +25,10 @@ set -euo pipefail
 
 # ================================ KONSTANTA =================================
 
-readonly POMO_VERSION="1.0.0"
+readonly POMO_VERSION="1.1.0"
+
+# URL script mentah di GitHub; dipakai oleh subcommand "update"
+readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomodoro_cli/main/pomo"
 
 # Direktori data mengikuti XDG; fallback ke ~/.local/share
 readonly DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pomo"
@@ -812,6 +815,7 @@ Usage:
   pomo -w             Start a short break (5 minutes)
   pomo -W             Start a long break (15 minutes)
   pomo stats          Show session statistics
+  pomo update         Update to the latest version from GitHub
   pomo --help         Show this help
   pomo --version      Show version
 
@@ -844,6 +848,67 @@ show_version() {
     printf 'pomo %s\n' "$POMO_VERSION"
 }
 
+# ================================= UPDATE ===================================
+
+resolve_self() {
+    # Path absolut script ini, mengikuti symlink (mis. /usr/local/bin/pomo)
+    local self=${BASH_SOURCE[0]:-$0}
+    local resolved
+    if resolved=$(readlink -f "$self" 2>/dev/null) && [[ -n $resolved ]]; then
+        self=$resolved
+    fi
+    printf '%s' "$self"
+}
+
+self_update() {
+    # $1 = path script ini. Unduh versi terbaru dari GitHub lalu timpa diri
+    # sendiri secara atomik (file baru ditulis ke temp, lalu di-mv ke atasnya).
+    local self=$1
+    local tmp new_version
+
+    if [[ ! -w $self ]]; then
+        die "cannot update: '$self' is not writable" \
+            "Re-run with sudo, or reinstall into a directory you own (see README)."
+    fi
+
+    tmp=$(mktemp) || die "cannot create a temporary file"
+
+    if command -v curl >/dev/null 2>&1; then
+        if ! curl -fsSL "$POMO_RAW_URL" -o "$tmp"; then
+            rm -f "$tmp"
+            die "download failed: $POMO_RAW_URL"
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if ! wget -qO "$tmp" "$POMO_RAW_URL"; then
+            rm -f "$tmp"
+            die "download failed: $POMO_RAW_URL"
+        fi
+    else
+        rm -f "$tmp"
+        die "updating needs curl or wget installed"
+    fi
+
+    # Validasi hasil unduhan: harus berisi baris POMO_VERSION
+    new_version=$(sed -n 's/^readonly POMO_VERSION="\([^"]*\)"$/\1/p' "$tmp" | head -n 1)
+    if [[ -z $new_version ]]; then
+        rm -f "$tmp"
+        die "downloaded file does not look like pomo (POMO_VERSION not found)"
+    fi
+
+    if [[ $new_version == "$POMO_VERSION" ]]; then
+        rm -f "$tmp"
+        printf 'pomo %s — already up to date.\n' "$POMO_VERSION"
+        return 0
+    fi
+
+    chmod +x "$tmp"
+    if ! mv -f "$tmp" "$self"; then
+        rm -f "$tmp"
+        die "failed to replace '$self'"
+    fi
+    printf 'Updated pomo %s -> %s\n' "$POMO_VERSION" "$new_version"
+}
+
 # ================================== MAIN ====================================
 
 main() {
@@ -860,6 +925,9 @@ main() {
             ;;
         stats)
             show_stats
+            ;;
+        update)
+            self_update "$(resolve_self)"
             ;;
         -h|--help|help)
             show_help
