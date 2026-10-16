@@ -52,7 +52,7 @@ export XDG_CONFIG_HOME="$TMP/config"
 # --------------------------------------------------------------- version
 out=$(bash "$POMO" --version 2>&1)
 assert_contains '--version mencetak nama dan versi' "$out" 'pomo '
-assert_contains '--version cocok dengan changelog 1.3.0' "$out" 'pomo 1.3.0'
+assert_contains '--version cocok dengan changelog 1.3.1' "$out" 'pomo 1.3.1'
 
 # ------------------------------------------------------------------ help
 out=$(bash "$POMO" --help 2>&1)
@@ -172,20 +172,14 @@ unit_rc=0
     # reveal 100: tidak ada spasi, hanya █ atau ▒ (kelip)
     out=$(pixel_anim '█████' 0 0 100 42)
     [[ ${#out} == 5 && $out != *[[:space:]]* ]]
-    [[ $out == *[^▒]* ]]   # mayoritas tetap █ penuh
-    # tick berbeda menghasilkan pola kelip berbeda (font "bergerak")
-    a=$(pixel_anim '█████' 0 0 100 41)
-    b=$(pixel_anim '█████' 0 0 100 42)
-    if [[ $a == "$b" ]]; then
-        # kecil kemungkinannya semua sama; coba beberapa tick
-        same=1
-        for tk in 7 13 99; do
-            x=$(pixel_anim '█████' 0 0 100 "$tk")
-            y=$(pixel_anim '█████' 0 0 100 $(( tk + 1 )))
-            [[ $x != "$y" ]] && { same=0; break; }
-        done
-        (( same == 0 ))
-    fi
+    # kelip halus: mayoritas frame bersih, sesekali ada satu piksel ▒
+    twink=0 clean=0
+    for tk in $(seq 0 99); do
+        pout=$(pixel_anim '█████' 0 0 100 "$tk")
+        if [[ $pout == *▒* ]]; then twink=$(( twink + 1 )); else clean=$(( clean + 1 )); fi
+    done
+    (( twink >= 1 && twink <= 10 ))   # jarang: maksimal ~10% frame
+    (( clean >= 90 ))
 ) || unit_rc=$?
 assert_eq 'apply_theme + cycle_theme + set_mode_colors: benar' "$unit_rc" '0'
 
