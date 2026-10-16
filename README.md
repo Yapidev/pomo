@@ -109,7 +109,54 @@ Completed sessions are appended to
 
 ## Installation
 
+### Quick install (one command)
+
+Downloads the single self-contained script into `~/.local/bin` (no root
+required), then run `pomo` from any terminal:
+
+```console
+$ mkdir -p ~/.local/bin \
+    && curl -fsSL https://raw.githubusercontent.com/Yapidev/pomodoro_cli/main/pomo \
+        -o ~/.local/bin/pomo \
+    && chmod +x ~/.local/bin/pomo
+```
+
+No `curl`? Use `wget` instead:
+
+```console
+$ mkdir -p ~/.local/bin \
+    && wget -O ~/.local/bin/pomo \
+        https://raw.githubusercontent.com/Yapidev/pomodoro_cli/main/pomo \
+    && chmod +x ~/.local/bin/pomo
+```
+
+Open a **new terminal** (so the refreshed `PATH` is picked up) and start it:
+
+```console
+$ pomo
+```
+
+If your shell says `pomo: command not found`, `~/.local/bin` is not on your
+`PATH` yet — add it:
+
+```console
+$ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+```
+
+Notes:
+
+- The URL tracks the `main` branch, so the one-liner always installs the
+  latest version. To pin a release, replace `main` with a tag
+  (`https://raw.githubusercontent.com/Yapidev/pomodoro_cli/v1.0.0/pomo`).
+- Updating = re-running the same command; the file is simply overwritten.
+- Uninstalling = `rm ~/.local/bin/pomo`. Your session history in
+  `~/.local/share/pomo/` is left untouched.
+- Prefer to inspect what you run? It is one plain Bash file:
+  `less ~/.local/bin/pomo` before your first run.
+
 ### Manual
+
+Download the script however you like (clone, browser, etc.), then:
 
 ```console
 $ sudo install -Dm755 pomo /usr/local/bin/pomo
