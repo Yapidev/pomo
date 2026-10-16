@@ -28,7 +28,7 @@ set -euo pipefail
 readonly POMO_VERSION="1.1.0"
 
 # URL script mentah di GitHub; dipakai oleh subcommand "update"
-readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomodoro_cli/main/pomo"
+readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
 
 # Direktori data mengikuti XDG; fallback ke ~/.local/share
 readonly DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pomo"
