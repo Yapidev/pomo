@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ================================ KONSTANTA =================================
 
-readonly POMO_VERSION="1.2.1"
+readonly POMO_VERSION="1.2.2"
 
 # URL script mentah di GitHub; dipakai oleh subcommand "update"
 readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
@@ -125,11 +125,17 @@ apply_theme() {
     # Terapkan palet tema $1 (default: THEME_NAME aktif)
     local t=${1:-$THEME_NAME}
     case $t in
-        # Indeks 256-color, BUKAN kode ANSI bright: \033[92m memang hijau
-        # terang, tetapi 38;5;92 adalah ungu. Padanan 256-color yang tepat
-        # untuk bright green/yellow/blue/magenta/cyan/white:
-        # 83 227 63 207 87 231.
-        default)   set_palette 83 227 63 207 87 231 ;;
+        # default: kode SGR bright ASLI dari sebelum fitur theme. Jangan
+        # diganti indeks 256-color — \033[92m mengikuti palet terminal
+        # (mis. Catppuccin hijau #A6E3A1), sedangkan 38;5;83 selalu #5fff5f,
+        # sehingga hasilnya berbeda di terminal berpalet custom.
+        default)
+            if (( COLOR_ENABLED )); then
+                C_GREEN=$'\033[92m';   C_YELLOW=$'\033[93m'
+                C_BLUE=$'\033[94m';    C_MAGENTA=$'\033[95m'
+                C_CYAN=$'\033[96m';    C_WHITE=$'\033[97m'
+            fi
+            ;;
         dracula)   set_palette 120 213 117 141 117 255 ;;
         gruvbox)   set_palette 114 214 109 175 108 223 ;;
         nord)      set_palette 108 222 110 139 110 254 ;;

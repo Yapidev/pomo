@@ -52,7 +52,7 @@ export XDG_CONFIG_HOME="$TMP/config"
 # --------------------------------------------------------------- version
 out=$(bash "$POMO" --version 2>&1)
 assert_contains '--version mencetak nama dan versi' "$out" 'pomo '
-assert_contains '--version cocok dengan changelog 1.2.1' "$out" 'pomo 1.2.1'
+assert_contains '--version cocok dengan changelog 1.2.2' "$out" 'pomo 1.2.2'
 
 # ------------------------------------------------------------------ help
 out=$(bash "$POMO" --help 2>&1)
@@ -154,9 +154,9 @@ unit_rc=0
     [[ $C_DIGITS == $'\033[38;5;46m' ]]
 
     apply_theme default
-    [[ $C_GREEN == $'\033[38;5;83m' ]]
-    [[ $C_CYAN == $'\033[38;5;87m' ]]
-    [[ $C_YELLOW == $'\033[38;5;227m' ]]
+    [[ $C_GREEN == $'\033[92m' ]]
+    [[ $C_CYAN == $'\033[96m' ]]
+    [[ $C_YELLOW == $'\033[93m' ]]
 
     theme_valid nord
     ! theme_valid bogus
