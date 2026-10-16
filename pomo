@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ================================ KONSTANTA =================================
 
-readonly POMO_VERSION="1.2.2"
+readonly POMO_VERSION="1.2.3"
 
 # URL script mentah di GitHub; dipakai oleh subcommand "update"
 readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
@@ -147,12 +147,16 @@ apply_theme() {
 }
 
 cycle_theme() {
-    # Pindah ke tema berikutnya (dipakai oleh tombol menu 'c')
+    # Pindah ke tema berikutnya (dipakai oleh tombol menu 'c').
+    # Tema langsung dipakai DAN tersimpan, jadi sesi berikutnya memakai
+    # tema yang sama. Penyimpanan best-effort: gagal tulis config tidak
+    # boleh menghentikan timer.
     local i len=${#THEME_NAMES[@]}
     for (( i = 0; i < len; i++ )); do
         if [[ ${THEME_NAMES[i]} == "$THEME_NAME" ]]; then
             apply_theme "${THEME_NAMES[$(( (i + 1) % len ))]}"
             THEME_CHANGED=1
+            save_theme || true
             return
         fi
     done
@@ -613,7 +617,10 @@ open_menu() {
             3)     MENU_RESULT='long_break' ;;
             h|H|'?') show_help_overlay ;;
             t|T)   show_stats_overlay ;;
-            c|C)   cycle_theme ;;
+            c|C)   cycle_theme
+                   # Terapkan ulang warna mode agar menu (dan timer
+                   # setelahnya) langsung memakai tema yang baru.
+                   set_mode_colors "$CURRENT_MODE" ;;
             b|B|m|M|'') MENU_RESULT='back' ;;   # Enter juga kembali
             q|Q)   MENU_RESULT='quit' ;;
         esac
