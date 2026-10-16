@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ================================ KONSTANTA =================================
 
-readonly POMO_VERSION="1.3.2"
+readonly POMO_VERSION="1.3.3"
 
 # URL script mentah di GitHub; dipakai oleh subcommand "update"
 readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
@@ -343,31 +343,22 @@ log_session() {
 # =============================== GAMBAR UI ==================================
 
 pixel_anim() {
-    # Animasi piksel untuk satu baris glyph digit.
+    # Animasi piksel untuk satu baris glyph digit (khusus intro).
     # $1 baris glyph, $2 indeks glyph ke-0, $3 nomor baris glyph (0-4),
-    # $4 reveal 0-100, $5 tick (sisa detik).
-    # reveal < 100  : mode intro — piksel menyala bertahap (deterministik
-    #                 per posisi, urutannya terlihat alami).
-    # reveal == 100 : mode idle — gelombang cahaya selebar 4 kolom
-    #                 menyapu digit; posisinya maju 3 kolom tiap detik,
-    #                 satu sapuan penuh ~13 detik lalu jeda singkat.
-    #                 Piksel dalam gelombang digambar dengan C_WHITE,
-    #                 lalu warna digit dipulihkan.
-    local rowstr=$1 gi=$2 r=$3 reveal=$4 tick=$5
-    local out='' pos ch h gcol wave
-    wave=$(( (tick * 3) % 40 ))
+    # $4 reveal 0-100: piksel dengan hash >= reveal masih tersembunyi
+    # (spasi), sisanya sudah menyala. Hash deterministik per posisi
+    # sehingga urutan menyala terlihat alami.
+    local rowstr=$1 gi=$2 r=$3 reveal=$4
+    local out='' pos ch h
     for (( pos = 0; pos < ${#rowstr}; pos++ )); do
         ch=${rowstr:pos:1}
         if [[ $ch != '█' ]]; then
             out+=$ch
             continue
         fi
-        gcol=$(( gi * 6 + pos ))
         h=$(( (gi * 31 + r * 17 + pos * 13) % 100 ))
-        if (( reveal < 100 && h >= reveal )); then
+        if (( h >= reveal )); then
             out+=' '
-        elif (( reveal == 100 && gcol >= wave && gcol < wave + 4 )); then
-            out+="${C_WHITE}█${C_DIGITS}"
         else
             out+='█'
         fi
@@ -436,8 +427,9 @@ draw_ui() {
                     if (( remaining % 2 )); then
                         rowstr=${rowstr//█/▒}
                     fi
-                else
-                    rowstr=$(pixel_anim "$rowstr" "$i" "$r" "$reveal" "$remaining")
+                elif (( reveal < 100 )); then
+                    # intro dissolve: piksel menyala bertahap
+                    rowstr=$(pixel_anim "$rowstr" "$i" "$r" "$reveal")
                 fi
             fi
             seg+=$rowstr

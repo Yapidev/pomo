@@ -52,7 +52,7 @@ export XDG_CONFIG_HOME="$TMP/config"
 # --------------------------------------------------------------- version
 out=$(bash "$POMO" --version 2>&1)
 assert_contains '--version mencetak nama dan versi' "$out" 'pomo '
-assert_contains '--version cocok dengan changelog 1.3.2' "$out" 'pomo 1.3.2'
+assert_contains '--version cocok dengan changelog 1.3.3' "$out" 'pomo 1.3.3'
 
 # ------------------------------------------------------------------ help
 out=$(bash "$POMO" --help 2>&1)
@@ -166,20 +166,15 @@ unit_rc=0
     theme_valid nord
     ! theme_valid bogus
 
-    # pixel_anim: reveal 0 = semua piksel tersembunyi (intro)
-    out=$(pixel_anim '█████' 0 0 0 42)
+    # pixel_anim (intro): reveal 0 = semua piksel tersembunyi
+    out=$(pixel_anim '█████' 0 0 0)
     [[ $out == '     ' ]]
-
-    # idle: gelombang cahaya hadir dan bergerak tiap detik
-    C_WHITE=$'\033[97m'; C_DIGITS=$'\033[92m'
-    a=$(pixel_anim '█████' 0 0 100 0)
-    [[ $a == *$'\033[97m'* ]]      # highlight band terlihat
-    b=$(pixel_anim '█████' 0 0 100 1)
-    [[ $a != "$b" ]]               # posisi band bergeser tiap detik
-    # tanpa warna (non-tty): keluaran tetap baris glyph bersih
-    C_WHITE=''; C_DIGITS=''
-    out=$(pixel_anim '█████' 0 0 100 42)
-    [[ ${#out} == 5 && $out != *[[:space:]]* ]]
+    # reveal 100: glyph utuh tanpa modifikasi
+    out=$(pixel_anim '█████' 0 0 100)
+    [[ $out == '█████' ]]
+    # reveal parsial: campuran spasi dan block, lebar tetap 5
+    out=$(pixel_anim '█████' 0 0 50)
+    [[ ${#out} == 5 && $out == *█* && $out == *' '* ]]
 ) || unit_rc=$?
 assert_eq 'apply_theme + cycle_theme + set_mode_colors: benar' "$unit_rc" '0'
 
