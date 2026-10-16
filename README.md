@@ -44,13 +44,13 @@ dependencies beyond `coreutils`, `tput` (ncurses) and `notify-send`.
 ## Usage
 
 ```console
-$ pomo              # start a 25 minute focus session
-$ pomo start        # same as above
-$ pomo -w           # short break (5 minutes)
-$ pomo -W           # long break (15 minutes)
-$ pomo stats        # session statistics
-$ pomo --help       # usage help
-$ pomo --version    # version
+pomo              # start a 25 minute focus session
+pomo start        # same as above
+pomo -w           # short break (5 minutes)
+pomo -W           # long break (15 minutes)
+pomo stats        # session statistics
+pomo --help       # usage help
+pomo --version    # version
 ```
 
 Keys while the timer is running:
@@ -94,7 +94,7 @@ readonly CYCLES_BEFORE_LONG=4
 Change the defaults by editing those lines, or override per run:
 
 ```console
-$ POMO_FOCUS_SECONDS=1800 pomo    # 30 minute focus session
+POMO_FOCUS_SECONDS=1800 pomo    # 30 minute focus session
 ```
 
 ## Data
@@ -115,7 +115,7 @@ Downloads the single self-contained script into `~/.local/bin` (no root
 required), then run `pomo` from any terminal:
 
 ```console
-$ mkdir -p ~/.local/bin \
+mkdir -p ~/.local/bin \
     && curl -fsSL https://raw.githubusercontent.com/Yapidev/pomodoro_cli/main/pomo \
         -o ~/.local/bin/pomo \
     && chmod +x ~/.local/bin/pomo
@@ -124,7 +124,7 @@ $ mkdir -p ~/.local/bin \
 No `curl`? Use `wget` instead:
 
 ```console
-$ mkdir -p ~/.local/bin \
+mkdir -p ~/.local/bin \
     && wget -O ~/.local/bin/pomo \
         https://raw.githubusercontent.com/Yapidev/pomodoro_cli/main/pomo \
     && chmod +x ~/.local/bin/pomo
@@ -133,14 +133,14 @@ $ mkdir -p ~/.local/bin \
 Open a **new terminal** (so the refreshed `PATH` is picked up) and start it:
 
 ```console
-$ pomo
+pomo
 ```
 
 If your shell says `pomo: command not found`, `~/.local/bin` is not on your
 `PATH` yet — add it:
 
 ```console
-$ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
 
 Notes:
@@ -159,7 +159,7 @@ Notes:
 Download the script however you like (clone, browser, etc.), then:
 
 ```console
-$ sudo install -Dm755 pomo /usr/local/bin/pomo
+sudo install -Dm755 pomo /usr/local/bin/pomo
 ```
 
 Or without root: `install -Dm755 pomo ~/.local/bin/pomo` (make sure
@@ -170,15 +170,15 @@ Or without root: `install -Dm755 pomo ~/.local/bin/pomo` (make sure
 Build the `.deb` (on Debian/Ubuntu, or anywhere `dpkg-deb` is installed):
 
 ```console
-$ ./build-deb.sh
+./build-deb.sh
 # -> build/pomo_1.0.0-1_all.deb
-$ sudo apt install ./build/pomo_1.0.0-1_all.deb   # installs /usr/bin/pomo
+sudo apt install ./build/pomo_1.0.0-1_all.deb   # installs /usr/bin/pomo
 ```
 
 Full debhelper build is also available inside `debian/`:
 
 ```console
-$ dpkg-buildpackage -us -uc
+dpkg-buildpackage -us -uc
 ```
 
 ## License
