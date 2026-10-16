@@ -17,8 +17,7 @@ dependencies beyond `coreutils`, `tput` (ncurses) and `notify-send`.
            [q] quit   [p] pause   [s] skip
 ```
 
-> Screenshot placeholder — run `pomo` and take a real screenshot, then drop it
-> here as `screenshot.png`.
+![pomo focus session](assets/screenshot.png)
 
 ## Features
 
