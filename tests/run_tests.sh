@@ -52,7 +52,7 @@ export XDG_CONFIG_HOME="$TMP/config"
 # --------------------------------------------------------------- version
 out=$(bash "$POMO" --version 2>&1)
 assert_contains '--version mencetak nama dan versi' "$out" 'pomo '
-assert_contains '--version cocok dengan changelog 1.3.1' "$out" 'pomo 1.3.1'
+assert_contains '--version cocok dengan changelog 1.3.2' "$out" 'pomo 1.3.2'
 
 # ------------------------------------------------------------------ help
 out=$(bash "$POMO" --help 2>&1)
@@ -166,20 +166,20 @@ unit_rc=0
     theme_valid nord
     ! theme_valid bogus
 
-    # pixel_anim: reveal 0 = semua piksel tersembunyi
+    # pixel_anim: reveal 0 = semua piksel tersembunyi (intro)
     out=$(pixel_anim '█████' 0 0 0 42)
     [[ $out == '     ' ]]
-    # reveal 100: tidak ada spasi, hanya █ atau ▒ (kelip)
+
+    # idle: gelombang cahaya hadir dan bergerak tiap detik
+    C_WHITE=$'\033[97m'; C_DIGITS=$'\033[92m'
+    a=$(pixel_anim '█████' 0 0 100 0)
+    [[ $a == *$'\033[97m'* ]]      # highlight band terlihat
+    b=$(pixel_anim '█████' 0 0 100 1)
+    [[ $a != "$b" ]]               # posisi band bergeser tiap detik
+    # tanpa warna (non-tty): keluaran tetap baris glyph bersih
+    C_WHITE=''; C_DIGITS=''
     out=$(pixel_anim '█████' 0 0 100 42)
     [[ ${#out} == 5 && $out != *[[:space:]]* ]]
-    # kelip halus: mayoritas frame bersih, sesekali ada satu piksel ▒
-    twink=0 clean=0
-    for tk in $(seq 0 99); do
-        pout=$(pixel_anim '█████' 0 0 100 "$tk")
-        if [[ $pout == *▒* ]]; then twink=$(( twink + 1 )); else clean=$(( clean + 1 )); fi
-    done
-    (( twink >= 1 && twink <= 10 ))   # jarang: maksimal ~10% frame
-    (( clean >= 90 ))
 ) || unit_rc=$?
 assert_eq 'apply_theme + cycle_theme + set_mode_colors: benar' "$unit_rc" '0'
 
