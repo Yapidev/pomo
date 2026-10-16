@@ -104,7 +104,9 @@ required), then run `pomo` from any terminal:
 mkdir -p ~/.local/bin \
     && curl -fsSL https://raw.githubusercontent.com/Yapidev/pomo/main/pomo \
         -o ~/.local/bin/pomo \
-    && chmod +x ~/.local/bin/pomo
+    && chmod +x ~/.local/bin/pomo \
+    && echo "Installed $(~/.local/bin/pomo --version) to ~/.local/bin/pomo" \
+    && echo "Open a new terminal and run: pomo"
 ```
 
 No `curl`? Use `wget` instead:
@@ -113,7 +115,9 @@ No `curl`? Use `wget` instead:
 mkdir -p ~/.local/bin \
     && wget -O ~/.local/bin/pomo \
         https://raw.githubusercontent.com/Yapidev/pomo/main/pomo \
-    && chmod +x ~/.local/bin/pomo
+    && chmod +x ~/.local/bin/pomo \
+    && echo "Installed $(~/.local/bin/pomo --version) to ~/.local/bin/pomo" \
+    && echo "Open a new terminal and run: pomo"
 ```
 
 Open a **new terminal** (so the refreshed `PATH` is picked up) and start it:
