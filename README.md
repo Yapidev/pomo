@@ -3,20 +3,6 @@
 An eye-catching pomodoro timer for your terminal — pure Bash, no external
 dependencies beyond `coreutils`, `tput` (ncurses) and `notify-send`.
 
-```
-                FOCUS SESSION
-
-              ┌─────────────────────────────────┐
-              │ █████  █████     █████  █████   │
-              │ █████  █████     █████  █████   │
-              │  ...
-              └─────────────────────────────────┘
-
-           ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░
-           Elapsed 10:30 of 25:00  ·  42%
-           [q] quit   [p] pause   [s] skip
-```
-
 ![pomo focus session](assets/screenshot.png)
 
 ## Features
