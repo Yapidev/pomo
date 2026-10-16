@@ -109,8 +109,9 @@ POMO_ANIMATION=off pomo             # disable the pixel animations
 ```
 
 The timer animates like a living pixel display: digits light up pixel by
-pixel at session start, a single pixel shimmer passes through the digits,
-and the colon blinks — `POMO_ANIMATION=off` turns all of it off.
+pixel at session start, a wave of light sweeps across the digits every
+few seconds, and the colon blinks — `POMO_ANIMATION=off` turns all of
+it off.
 
 ## Where is my data?
 
