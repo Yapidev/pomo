@@ -357,6 +357,8 @@ OVERLAY_LINES=()
 
 draw_overlay() {
     # Overlay layar penuh: $1 judul, $2 prompt (kosong = tanpa prompt)
+    # Judul dan prompt di tengah layar; baris konten disusun sebagai satu
+    # blok rata kiri yang diletakkan di tengah (lebar blok = baris terpanjang).
     local title=$1 prompt=$2
     local cols=$TERM_COLS rows=$TERM_LINES
     local frame='' pad line n txt
@@ -370,9 +372,16 @@ draw_overlay() {
     frame+="$line${E}[K"$'\n'
     frame+="${E}[K"$'\n'
 
+    # Hitung lebar blok konten lalu rata-kan bloknya di tengah layar
+    local block_w=0 block_pad block_pad_s
     for txt in "${OVERLAY_LINES[@]}"; do
-        pad=$(( (cols - ${#txt}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
-        printf -v line '%*s%s%s%s' "$pad" '' "$C_WHITE" "$txt" "$C_RESET"
+        if (( ${#txt} > block_w )); then block_w=${#txt}; fi
+    done
+    block_pad=$(( (cols - block_w) / 2 ))
+    block_pad=$(( block_pad < 0 ? 0 : block_pad ))
+    printf -v block_pad_s '%*s' "$block_pad" ''
+    for txt in "${OVERLAY_LINES[@]}"; do
+        printf -v line '%s%s%s%s' "$block_pad_s" "$C_WHITE" "$txt" "$C_RESET"
         frame+="$line${E}[K"$'\n'
     done
 
