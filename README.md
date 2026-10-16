@@ -3,7 +3,7 @@
 A pretty pomodoro timer for your terminal — one Bash file, nothing else
 to install.
 
-![pomo focus session](assets/screenshot.png)
+![pomo focus session](assets/screenshot_new.png)
 
 Big block-digit countdown, progress bar, colors, desktop notifications
 and a session log. Press `pomo` and start focusing.
