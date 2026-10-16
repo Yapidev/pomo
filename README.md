@@ -1,217 +1,128 @@
 # pomo
 
-An eye-catching pomodoro timer for your terminal — pure Bash, no external
-dependencies beyond `coreutils`, `tput` (ncurses) and `notify-send`.
+A pretty pomodoro timer for your terminal — one Bash file, nothing else
+to install.
 
 ![pomo focus session](assets/screenshot.png)
 
-## Features
+Big block-digit countdown, progress bar, colors, desktop notifications
+and a session log. Press `pomo` and start focusing.
 
-- Large `MM:SS` timer rendered from Unicode block characters (`█`)
-- Horizontal progress bar (`▓` filled / `░` remaining)
-- Unicode box border around the timer
-- Per-mode colors: focus = green/cyan, short break = yellow, long break = blue/magenta
-- Color themes: `pomo theme <name>`, or cycle them live from the menu with `c`
-- Flicker-free redraw (ANSI cursor-home, no full-screen clear per tick)
-- Non-blocking key input: `p` pause, `s` skip, `q` quit
-- Automatic cycle: every 4th completed focus session earns a long break,
-  the others a short break (you confirm before the next session starts)
-- Desktop notification (`notify-send -u critical`) + terminal bell when a
-  session ends
-- Session history and `pomo stats` with today's summary and a 7-day chart
-- Safe terminal restore on Ctrl+C (alternate screen, cursor, `stty`)
+## Install
 
-## Requirements
-
-- Linux, bash 4.0 or newer
-- `tput` (ncurses), standard `coreutils`
-- `notify-send` (optional — the bell works without it)
-
-## Usage
-
-```console
-pomo              # start a 25 minute focus session
-pomo start        # same as above
-pomo -w           # short break (5 minutes)
-pomo -W           # long break (15 minutes)
-pomo stats        # session statistics
-pomo theme        # show the current theme and list all themes
-pomo theme nord   # switch to the nord theme (persisted)
-pomo update       # update to the latest version from GitHub
-pomo --help       # usage help
-pomo --version    # version
-```
-
-Keys while the timer is running:
-
-| Key | Action                                |
-|-----|---------------------------------------|
-| `p` | Pause / resume                        |
-| `s` | Skip session                          |
-| `m` | Open the menu                         |
-| `q` | Quit                                  |
-
-Menu (opened with `m`, the timer is frozen while it is open):
-
-| Key | Action                                  |
-|-----|-----------------------------------------|
-| `1` | Start a focus session                   |
-| `2` | Start a short break                     |
-| `3` | Start a long break                      |
-| `h` | Help                                    |
-| `t` | Session statistics                      |
-| `c` | Cycle the color theme (applied live)    |
-| `b` | Back to the timer (Enter works too)     |
-| `q` | Quit                                    |
-
-Switching sessions from the menu abandons the current session without
-logging it, exactly like `s` (skip).
-
-Sessions are only logged when they complete — a skipped session writes
-nothing.
-
-## Configuration
-
-Default durations are constants at the top of the `pomo` script:
-
-```bash
-FOCUS_SECONDS="${POMO_FOCUS_SECONDS:-1500}"        # 25 minutes
-SHORT_BREAK_SECONDS="${POMO_SHORT_BREAK_SECONDS:-300}"  # 5 minutes
-LONG_BREAK_SECONDS="${POMO_LONG_BREAK_SECONDS:-900}"    # 15 minutes
-readonly CYCLES_BEFORE_LONG=4
-```
-
-Change the defaults by editing those lines, or override per run:
-
-```console
-POMO_FOCUS_SECONDS=1800 pomo    # 30 minute focus session
-```
-
-## Themes
-
-Seven color themes are built in:
-
-| Theme      | Look                                    |
-|------------|-----------------------------------------|
-| `default`  | Bright green/cyan on a black terminal   |
-| `dracula`  | Purple, pink and cyan (Dracula palette) |
-| `gruvbox`  | Warm orange and olive tones             |
-| `nord`     | Cool blues and snow (Nord palette)     |
-| `solarized` | Muted Solarized-dark accents          |
-| `matrix`   | Everything glowing green                |
-| `mono`     | No colors at all                        |
-
-Pick one:
-
-```console
-pomo theme nord      # persisted in ~/.config/pomo/theme
-POMO_THEME=nord pomo # override for a single run
-```
-
-Or press `c` inside the menu to cycle themes while a session is running.
-
-## Data
-
-Completed sessions are appended to
-`~/.local/share/pomo/history.log` (respects `XDG_DATA_HOME`) as:
-
-```
-2026-10-16|focus|1500
-2026-10-16|short_break|300
-```
-
-## Installation
-
-### Quick install (one command)
-
-Downloads the single self-contained script into `~/.local/bin` (no root
-required), then run `pomo` from any terminal:
+One command, no root:
 
 ```console
 mkdir -p ~/.local/bin \
     && curl -fsSL https://raw.githubusercontent.com/Yapidev/pomo/main/pomo \
         -o ~/.local/bin/pomo \
     && chmod +x ~/.local/bin/pomo \
-    && echo "Installed $(~/.local/bin/pomo --version) to ~/.local/bin/pomo" \
-    && echo "Open a new terminal and run: pomo"
+    && echo "Installed $(~/.local/bin/pomo --version)"
 ```
 
-No `curl`? Use `wget` instead:
+No `curl`? Swap it for `wget -O ~/.local/bin/pomo <same-url>`.
 
-```console
-mkdir -p ~/.local/bin \
-    && wget -O ~/.local/bin/pomo \
-        https://raw.githubusercontent.com/Yapidev/pomo/main/pomo \
-    && chmod +x ~/.local/bin/pomo \
-    && echo "Installed $(~/.local/bin/pomo --version) to ~/.local/bin/pomo" \
-    && echo "Open a new terminal and run: pomo"
-```
-
-Open a **new terminal** (so the refreshed `PATH` is picked up) and start it:
+Open a new terminal (so `~/.local/bin` is on your `PATH`) and run:
 
 ```console
 pomo
 ```
 
-If your shell says `pomo: command not found`, `~/.local/bin` is not on your
-`PATH` yet — add it:
+- `pomo: command not found`? Add the bin dir:
+  `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc`
+- Update later with `pomo update`
+- Uninstall with `rm ~/.local/bin/pomo` (your history stays)
+- It is one plain script — `less ~/.local/bin/pomo` before your first run
+  if you like to know what you execute
+
+<details>
+<summary>Debian package</summary>
 
 ```console
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+./build-deb.sh
+sudo apt install ./build/pomo_*_all.deb
 ```
 
-Notes:
+</details>
 
-- The URL tracks the `main` branch, so the one-liner always installs the
-  latest version. To pin a release, replace `main` with a tag
-  (`https://raw.githubusercontent.com/Yapidev/pomo/v1.0.0/pomo`).
-- Updating = run `pomo update` (downloads the latest version from GitHub and
-  replaces itself), or simply re-run the install command above — the file is
-  overwritten either way. Session history is never touched.
-- Uninstalling = `rm ~/.local/bin/pomo`. Your session history in
-  `~/.local/share/pomo/` is left untouched.
-- Prefer to inspect what you run? It is one plain Bash file:
-  `less ~/.local/bin/pomo` before your first run.
-
-### Manual
-
-Download the script however you like (clone, browser, etc.), then:
+<details>
+<summary>From a clone</summary>
 
 ```console
 sudo install -Dm755 pomo /usr/local/bin/pomo
 ```
 
-Or without root: `install -Dm755 pomo ~/.local/bin/pomo` (make sure
-`~/.local/bin` is on your `PATH`).
+</details>
 
-### Debian package
+## Keys
 
-Build the `.deb` (on Debian/Ubuntu, or anywhere `dpkg-deb` is installed):
+While the timer runs:
+
+| Key | Action         |
+|-----|----------------|
+| `p` | Pause / resume |
+| `s` | Skip session   |
+| `m` | Menu           |
+| `q` | Quit           |
+
+Inside the menu (`m`): `1` focus · `2` short break · `3` long break ·
+`c` cycle theme · `t` stats · `h` help · `b` back · `q` quit.
+
+Only **completed** sessions are logged — skipping or switching writes nothing.
+
+## Commands
+
+| Command         | What it does                       |
+|-----------------|------------------------------------|
+| `pomo`          | Start a focus session (25 min)     |
+| `pomo -w`       | Short break (5 min)                 |
+| `pomo -W`       | Long break (15 min)                |
+| `pomo stats`    | Today's summary + 7-day chart      |
+| `pomo theme`    | Show / pick a color theme          |
+| `pomo update`   | Self-update from GitHub            |
+| `pomo --help`   | Everything above, in the terminal |
+
+The cycle is automatic: every 4th completed focus session is followed by
+a long break, the others by a short break. You confirm before each next
+session starts.
+
+## Themes
+
+Seven looks are built in: `default`, `dracula`, `gruvbox`, `nord`,
+`solarized`, `matrix`, `mono`.
 
 ```console
-./build-deb.sh
-# -> build/pomo_1.0.0-1_all.deb
-sudo apt install ./build/pomo_1.0.0-1_all.deb   # installs /usr/bin/pomo
+pomo theme nord       # switch (saved in ~/.config/pomo/theme)
+POMO_THEME=matrix pomo # just for this one run
 ```
 
-Full debhelper build is also available inside `debian/`:
+Or press `c` in the menu to flip through them live.
+
+## Custom durations
 
 ```console
-dpkg-buildpackage -us -uc
+POMO_FOCUS_SECONDS=1800 pomo        # 30 min focus
+POMO_SHORT_BREAK_SECONDS=600 pomo -w # 10 min short break
+POMO_LONG_BREAK_SECONDS=1200 pomo -W # 20 min long break
 ```
+
+## Where is my data?
+
+Completed sessions are appended to
+`~/.local/share/pomo/history.log` (`XDG_DATA_HOME` respected) as
+`date|type|seconds`, e.g.:
+
+```
+2026-10-16|focus|1500
+```
+
+Plain text — grep it, back it up, or delete it. That is all pomo stores.
 
 ## Development
 
-Run the test suite (pure Bash, no framework needed):
-
 ```console
-tests/run_tests.sh
+tests/run_tests.sh    # pure-Bash test suite, no framework needed
 ```
-
-It covers the CLI surface (`--version`, `--help`, `stats`, `theme`), history
-aggregation (including corrupted lines), duration validation, the theme
-engine, and the self-update guard. The TUI itself is interactive and not
-covered by it.
 
 ## License
 
