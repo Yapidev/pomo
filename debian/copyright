@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: pomo
-Source: https://github.com/Yapidev/pomodoro_cli
+Source: https://github.com/Yapidev/pomo
 
 Files: *
 Copyright: 2026 Yapidev

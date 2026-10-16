@@ -102,7 +102,7 @@ required), then run `pomo` from any terminal:
 
 ```console
 mkdir -p ~/.local/bin \
-    && curl -fsSL https://raw.githubusercontent.com/Yapidev/pomodoro_cli/main/pomo \
+    && curl -fsSL https://raw.githubusercontent.com/Yapidev/pomo/main/pomo \
         -o ~/.local/bin/pomo \
     && chmod +x ~/.local/bin/pomo
 ```
@@ -112,7 +112,7 @@ No `curl`? Use `wget` instead:
 ```console
 mkdir -p ~/.local/bin \
     && wget -O ~/.local/bin/pomo \
-        https://raw.githubusercontent.com/Yapidev/pomodoro_cli/main/pomo \
+        https://raw.githubusercontent.com/Yapidev/pomo/main/pomo \
     && chmod +x ~/.local/bin/pomo
 ```
 
@@ -133,7 +133,7 @@ Notes:
 
 - The URL tracks the `main` branch, so the one-liner always installs the
   latest version. To pin a release, replace `main` with a tag
-  (`https://raw.githubusercontent.com/Yapidev/pomodoro_cli/v1.0.0/pomo`).
+  (`https://raw.githubusercontent.com/Yapidev/pomo/v1.0.0/pomo`).
 - Updating = run `pomo update` (downloads the latest version from GitHub and
   replaces itself), or simply re-run the install command above — the file is
   overwritten either way. Session history is never touched.

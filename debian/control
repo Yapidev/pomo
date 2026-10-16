@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Yapidev <yapidev@users.noreply.github.com>
 Standards-Version: 4.7.0
 Build-Depends: debhelper-compat (= 13)
-Homepage: https://github.com/Yapidev/pomodoro_cli
+Homepage: https://github.com/Yapidev/pomo
 
 Package: pomo
 Architecture: all
