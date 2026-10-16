@@ -1,0 +1,16 @@
+Source: pomo
+Section: utils
+Priority: optional
+Maintainer: Yapidev <yapidev@users.noreply.github.com>
+Standards-Version: 4.7.0
+Build-Depends: debhelper-compat (= 13)
+Homepage: https://github.com/Yapidev/pomodoro_cli
+
+Package: pomo
+Architecture: all
+Depends: bash (>= 4.0), libnotify-bin, ncurses-bin
+Description: Eye-catching pomodoro timer TUI in pure Bash
+ pomo is a terminal-based pomodoro timer with a large block-character
+ countdown, a progress bar and per-mode colors. It supports pause/skip/quit
+ keys, an automatic focus/break cycle (long break after every 4th focus
+ session), desktop notifications and a simple session statistics view.

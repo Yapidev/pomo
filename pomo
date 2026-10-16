@@ -1,0 +1,693 @@
+#!/usr/bin/env bash
+#
+# pomo — Pomodoro timer TUI murni Bash.
+#
+# Fitur:
+#   - Timer besar dari block character, progress bar, border Unicode
+#   - Siklus otomatis: 4 fokus -> 1 break panjang, sisanya break pendek
+#   - Riwayat sesi di ~/.local/share/pomo/history.log
+#   - Notifikasi desktop (notify-send) + bell saat sesi selesai
+#
+# Dependensi: bash 4+, coreutils, tput (ncurses), notify-send (opsional)
+
+# ---------------------------------------------------------------- guard bash
+# Pastikan dijalankan dengan bash 4+ (butuh associative array dsb.)
+if [[ -z ${BASH_VERSION:-} ]]; then
+    echo "pomo: error: this script must be run with bash." >&2
+    exit 1
+fi
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo "pomo: error: bash 4.0 or newer is required (found ${BASH_VERSION})." >&2
+    exit 1
+fi
+
+set -euo pipefail
+
+# ================================ KONSTANTA =================================
+
+readonly POMO_VERSION="1.0.0"
+
+# Direktori data mengikuti XDG; fallback ke ~/.local/share
+readonly DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pomo"
+readonly HISTORY_FILE="$DATA_DIR/history.log"
+
+# Durasi sesi dalam DETIK. Bisa dioverride lewat environment:
+#   POMO_FOCUS_SECONDS, POMO_SHORT_BREAK_SECONDS, POMO_LONG_BREAK_SECONDS
+FOCUS_SECONDS="${POMO_FOCUS_SECONDS:-1500}"         # 25 menit
+SHORT_BREAK_SECONDS="${POMO_SHORT_BREAK_SECONDS:-300}"   # 5 menit
+LONG_BREAK_SECONDS="${POMO_LONG_BREAK_SECONDS:-900}"     # 15 menit
+
+# Jumlah sesi fokus sebelum berhak dapat break panjang
+readonly CYCLES_BEFORE_LONG=4
+
+# Lebar progress bar (karakter)
+readonly BAR_WIDTH=40
+
+# Ukuran minimal terminal agar timer besar tampil utuh
+readonly MIN_COLS=45
+readonly MIN_ROWS=17
+
+# ============================== WARNA & ANSI ================================
+
+E=$'\033'   # escape character
+
+if [[ -t 1 ]]; then
+    C_RESET=$'\033[0m';  C_BOLD=$'\033[1m';  C_DIM=$'\033[2m'
+    C_GREEN=$'\033[92m'; C_YELLOW=$'\033[93m'; C_BLUE=$'\033[94m'
+    C_MAGENTA=$'\033[95m'; C_CYAN=$'\033[96m'; C_WHITE=$'\033[97m'
+else
+    C_RESET=''; C_BOLD=''; C_DIM=''
+    C_GREEN=''; C_YELLOW=''; C_BLUE=''
+    C_MAGENTA=''; C_CYAN=''; C_WHITE=''
+fi
+
+# Warna aktif sesuai mode; diisi oleh set_mode_colors()
+C_TITLE=''
+C_DIGITS=''
+C_BORDER=''
+C_BAR=''
+
+# ============================ FONT BLOCK TIMER ==============================
+# Setiap glyph = 5 baris x 5 kolom. Untuk aman di semua locale (C/POSIX
+# menghitung string per byte), glyph dipecah per baris ke FONTROWS["<char>_<r>"]
+# lewat mapfile — bukan dengan substring slicing.
+
+declare -A FONTROWS=()
+
+font_init() {
+    local -A glyph=(
+        [0]=$'█████\n█   █\n█   █\n█   █\n█████'
+        [1]=$'  █  \n  █  \n  █  \n  █  \n  █  '
+        [2]=$'█████\n    █\n█████\n█    \n█████'
+        [3]=$'█████\n    █\n█████\n    █\n█████'
+        [4]=$'█   █\n█   █\n█████\n    █\n    █'
+        [5]=$'█████\n█    \n█████\n    █\n█████'
+        [6]=$'█████\n█    \n█████\n█   █\n█████'
+        [7]=$'█████\n    █\n    █\n    █\n    █'
+        [8]=$'█████\n█   █\n█████\n█   █\n█████'
+        [9]=$'█████\n█   █\n█████\n    █\n█████'
+        [:]=$'     \n  █  \n     \n  █  \n     '
+    )
+    local k rows r
+    for k in "${!glyph[@]}"; do
+        mapfile -t rows <<< "${glyph[$k]}"
+        for (( r = 0; r < 5; r++ )); do
+            FONTROWS["${k}_${r}"]=${rows[$r]}
+        done
+    done
+}
+
+# ============================ STATE TERMINAL ================================
+
+TERM_COLS=80
+TERM_LINES=24
+INTERACTIVE=0        # 1 jika stdin adalah tty (input keyboard aktif)
+TUI_ACTIVE=0         # 1 jika alternate screen sedang dipakai
+SAVED_STTY=''        # pengaturan stty sebelum TUI dijalankan
+RESIZED=0            # flag yang diset oleh trap SIGWINCH
+
+# ================================ UTILITAS ==================================
+
+# Waktu epoch saat ini tanpa fork jika bash >= 5.
+now() {
+    if [[ -n ${EPOCHSECONDS:-} ]]; then
+        printf '%s' "$EPOCHSECONDS"
+    else
+        date +%s
+    fi
+}
+
+die() {
+    # $1 pesan error, $2 pesan tambahan (opsional)
+    printf 'pomo: error: %s\n' "$1" >&2
+    if [[ -n ${2:-} ]]; then
+        printf '%s\n' "$2" >&2
+    fi
+    exit 1
+}
+
+# ============================== VALIDASI ====================================
+
+validate_durations() {
+    local name value
+    for name in FOCUS_SECONDS SHORT_BREAK_SECONDS LONG_BREAK_SECONDS; do
+        value=${!name}
+        if [[ ! $value =~ ^[0-9]+$ ]] || (( value <= 0 )); then
+            die "invalid duration: $name must be a positive integer (got '$value')"
+        fi
+    done
+}
+
+# ============================ SETUP TERMINAL ===============================
+
+update_term_size() {
+    local c l
+    c=$(tput cols 2>/dev/null) || c=''
+    l=$(tput lines 2>/dev/null) || l=''
+    TERM_COLS=${c:-${COLUMNS:-80}}
+    TERM_LINES=${l:-${LINES:-24}}
+    TERM_COLS=$(( TERM_COLS < 10 ? 10 : TERM_COLS ))
+    TERM_LINES=$(( TERM_LINES < 5 ? 5 : TERM_LINES ))
+}
+
+init_terminal() {
+    # Simpan pengaturan terminal lama
+    if [[ -t 0 ]]; then
+        SAVED_STTY=$(stty -g 2>/dev/null) || SAVED_STTY=''
+        INTERACTIVE=1
+    fi
+    # Alternate screen + sembunyikan kursor + clear sekali saja.
+    # Redraw berikutnya memakai cursor-home, bukan clear penuh (anti-flicker).
+    printf '%s' "${E}[?1049h${E}[?25l${E}[2J"
+    TUI_ACTIVE=1
+    trap 'RESIZED=1' WINCH
+    update_term_size
+}
+
+cleanup() {
+    # Dipanggil via trap EXIT: pulihkan terminal apa pun penyebab keluarnya.
+    if (( TUI_ACTIVE )); then
+        TUI_ACTIVE=0
+        printf '%s' "${E}[?25h${E}[?1049l"
+        tput sgr0 2>/dev/null || true
+        if [[ -n $SAVED_STTY ]]; then
+            stty "$SAVED_STTY" 2>/dev/null || true
+        fi
+    fi
+}
+
+# ============================== NOTIFIKASI ==================================
+
+notify() {
+    # $1 judul, $2 isi. notify-send opsional; bell tetap dibunyikan.
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -u critical -a pomo "$1" "$2" || true
+    fi
+}
+
+ring_bell() {
+    printf '\a'
+}
+
+# ============================== PENYIMPANAN ================================
+
+log_session() {
+    # $1 tipe (focus|short_break|long_break), $2 durasi dalam detik
+    local type=$1 secs=$2
+    if [[ -z $type ]] || [[ ! $secs =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    mkdir -p "$DATA_DIR"
+    printf '%s|%s|%s\n' "$(date +%F)" "$type" "$secs" >> "$HISTORY_FILE"
+}
+
+# =============================== GAMBAR UI ==================================
+
+set_mode_colors() {
+    # Warna per mode: fokus hijau/cyan, break pendek kuning, break panjang biru/magenta
+    case $1 in
+        focus)
+            C_TITLE=$C_CYAN; C_DIGITS=$C_GREEN; C_BORDER=$C_CYAN; C_BAR=$C_GREEN ;;
+        short_break)
+            C_TITLE=$C_YELLOW; C_DIGITS=$C_YELLOW; C_BORDER=$C_YELLOW; C_BAR=$C_YELLOW ;;
+        long_break)
+            C_TITLE=$C_MAGENTA; C_DIGITS=$C_MAGENTA; C_BORDER=$C_BLUE; C_BAR=$C_BLUE ;;
+    esac
+}
+
+draw_ui() {
+    # $1 sisa detik, $2 total detik, $3 judul mode, $4 status pause (0/1)
+    local remaining=$1 total=$2 label=$3 paused=$4
+    local cols=$TERM_COLS rows=$TERM_LINES
+    local frame='' pad pad_s line n i r c seg
+    local mm ss t elapsed pct bar_w filled bar
+
+    # Terminal terlalu kecil: timer tetap jalan, tampilkan pesan singkat.
+    if (( cols < MIN_COLS || rows < MIN_ROWS )); then
+        local msg='Terminal too small (need 45x17) — the timer keeps running.'
+        pad=$(( (cols - ${#msg}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+        printf -v line '%*s%s%s%s' "$pad" '' "$C_YELLOW" "$msg" "$C_RESET"
+        printf '%s%s' "${E}[2J" "$line"
+        return 0
+    fi
+
+    mm=$(( remaining / 60 ))
+    ss=$(( remaining % 60 ))
+    printf -v t '%02d:%02d' "$mm" "$ss"
+
+    elapsed=$(( total - remaining ))
+    pct=$(( elapsed * 100 / total ))
+
+    # ---- progress bar ----
+    bar_w=$BAR_WIDTH
+    if (( cols - 6 < bar_w )); then bar_w=$(( cols - 6 )); fi
+    bar_w=$(( bar_w < 1 ? 1 : bar_w ))
+    filled=$(( pct * bar_w / 100 ))
+    if (( filled > bar_w )); then filled=$bar_w; fi
+    local bar_fill='' bar_rest=''
+    for (( i = 0; i < filled; i++ )); do bar_fill+='▓'; done
+    for (( i = 0; i < bar_w - filled; i++ )); do bar_rest+='░'; done
+    bar="${C_BAR}${bar_fill}${C_DIM}${bar_rest}${C_RESET}"
+
+    # ---- baris-baris digit besar (5 baris) ----
+    local timer_rows=()
+    for (( r = 0; r < 5; r++ )); do
+        seg=''
+        for (( i = 0; i < ${#t}; i++ )); do
+            c=${t:i:1}
+            if (( i > 0 )); then seg+=' '; fi
+            seg+="${FONTROWS[${c}_${r}]}"
+        done
+        timer_rows[r]=$seg
+    done
+
+    local time_w=$(( 6 * 5 + 5 ))    # 6 glyph x 5 kolom + 5 spasi pemisah = 35
+    local inner=$(( time_w + 2 ))
+    local box_w=$(( inner + 2 ))
+    local hbar
+    printf -v hbar '%*s' "$inner" ''
+    hbar=${hbar// /─}
+
+    # ---- susun frame ----
+    local top_pad=$(( (rows - 15) / 2 - 1 ))
+    top_pad=$(( top_pad < 0 ? 0 : top_pad ))
+    for (( n = 0; n < top_pad; n++ )); do frame+="${E}[K"$'\n'; done
+
+    # judul mode
+    pad=$(( (cols - ${#label}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+    printf -v line '%*s%s%s%s%s' "$pad" '' "$C_TITLE" "$C_BOLD" "$label" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+    frame+="${E}[K"$'\n'
+
+    # kotak border di sekeliling timer
+    pad=$(( (cols - box_w) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+    printf -v pad_s '%*s' "$pad" ''
+    printf -v line '%s%s┌%s┐%s' "$pad_s" "$C_BORDER" "$hbar" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+    for (( r = 0; r < 5; r++ )); do
+        printf -v line '%s%s│%s %s%s%s %s│%s' \
+            "$pad_s" "$C_BORDER" "$C_RESET" "$C_DIGITS" "${timer_rows[r]}" "$C_RESET" "$C_BORDER" "$C_RESET"
+        frame+="$line${E}[K"$'\n'
+    done
+    printf -v line '%s%s└%s┘%s' "$pad_s" "$C_BORDER" "$hbar" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+
+    frame+="${E}[K"$'\n'
+
+    # progress bar
+    pad=$(( (cols - bar_w) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+    printf -v line '%*s%s' "$pad" '' "$bar"
+    frame+="$line${E}[K"$'\n'
+    frame+="${E}[K"$'\n'
+
+    # baris info elapsed
+    local info
+    printf -v info 'Elapsed %02d:%02d of %02d:%02d  ·  %d%%' \
+        $(( elapsed / 60 )) $(( elapsed % 60 )) $(( total / 60 )) $(( total % 60 )) "$pct"
+    pad=$(( (cols - ${#info}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+    printf -v line '%*s%s%s%s' "$pad" '' "$C_DIM" "$info" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+    frame+="${E}[K"$'\n'
+
+    # baris status / bantuan tombol
+    local status plain
+    if (( paused )); then
+        plain='PAUSED  ·  [p] resume   [q] quit   [s] skip'
+        status="${C_YELLOW}${C_BOLD}PAUSED${C_RESET}${C_DIM}  ·  [p] resume   [q] quit   [s] skip${C_RESET}"
+    else
+        plain='[q] quit   [p] pause   [s] skip'
+        status="${C_DIM}[q] quit   [p] pause   [s] skip${C_RESET}"
+    fi
+    pad=$(( (cols - ${#plain}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+    printf -v line '%*s%s' "$pad" '' "$status"
+    frame+="$line${E}[K"$'\n'
+
+    # cursor-home + clear-to-end: redraw mulus tanpa flicker
+    printf '%s%s%s' "${E}[H" "$frame" "${E}[0J"
+}
+
+draw_message() {
+    # Layar pesan sederhana (dipakai di antar-sesi): $1 judul, $2 pesan, $3 prompt
+    local title=$1 msg=$2 prompt=$3
+    local cols=$TERM_COLS rows=$TERM_LINES
+    local frame='' pad line n
+    local top_pad=$(( (rows - 6) / 2 ))
+    top_pad=$(( top_pad < 0 ? 0 : top_pad ))
+    for (( n = 0; n < top_pad; n++ )); do frame+="${E}[K"$'\n'; done
+
+    pad=$(( (cols - ${#title}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+    printf -v line '%*s%s%s%s%s' "$pad" '' "$C_TITLE" "$C_BOLD" "$title" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+    frame+="${E}[K"$'\n'
+
+    pad=$(( (cols - ${#msg}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+    printf -v line '%*s%s%s%s' "$pad" '' "$C_WHITE" "$msg" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+    frame+="${E}[K"$'\n'
+
+    pad=$(( (cols - ${#prompt}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+    printf -v line '%*s%s%s%s' "$pad" '' "$C_DIM" "$prompt" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+
+    printf '%s%s%s' "${E}[H" "$frame" "${E}[0J"
+}
+
+# ================================ TIMER =====================================
+
+run_timer() {
+    # $1 durasi detik, $2 judul mode
+    # Return: 0 = selesai, 1 = user quit, 2 = user skip
+    local total=$1 label=$2
+    local end now remaining frozen paused=0 key rc
+    local last_frame=''
+
+    end=$(( $(now) + total ))
+    frozen=$total
+
+    while :; do
+        if (( paused )); then
+            remaining=$frozen
+        else
+            now=$(now)
+            remaining=$(( end - now ))
+            if (( remaining <= 0 )); then
+                draw_ui 0 "$total" "$label" 0
+                return 0
+            fi
+            frozen=$remaining
+        fi
+
+        # Gambar ulang hanya saat ada perubahan (detik/pause/resize)
+        local frame_key="$remaining-$paused-${TERM_COLS}x${TERM_LINES}"
+        if [[ $frame_key != "$last_frame" || $RESIZED == 1 ]]; then
+            draw_ui "$remaining" "$total" "$label" "$paused"
+            last_frame=$frame_key
+            RESIZED=0
+        fi
+
+        # Baca input tanpa menghentikan loop utama
+        key=''
+        if (( INTERACTIVE )); then
+            # rc: 0 = ada tombol, >128 = timeout read, 1 = EOF di stdin
+            rc=0
+            IFS= read -r -s -n 1 -t 0.1 key || rc=$?
+            if (( rc > 0 && rc <= 128 )); then
+                # stdin tertutup (EOF): jatuh ke mode non-interaktif
+                INTERACTIVE=0
+                sleep 1
+                continue
+            fi
+        else
+            sleep 1
+        fi
+
+        case $key in
+            q|Q)
+                return 1
+                ;;
+            p|P)
+                if (( paused )); then
+                    paused=0
+                    end=$(( $(now) + frozen ))
+                else
+                    paused=1
+                fi
+                ;;
+            s|S)
+                return 2
+                ;;
+        esac
+    done
+}
+
+# ============================ ALUR SESI / SIKLUS ============================
+
+prompt_continue() {
+    # $1 judul, $2 pesan, $3 label mode berikutnya
+    # Return: 0 = lanjut, 1 = berhenti
+    if (( ! INTERACTIVE )); then
+        # Mode non-interaktif (stdin bukan tty): sesi tunggal lalu selesai.
+        printf '%s\n' "$1 — $2"
+        return 1
+    fi
+
+    draw_message "$1" "$2" "Press [Enter] to start $3  ·  [q] to quit"
+
+    local ans=''
+    while :; do
+        ans=''
+        if ! IFS= read -r -s -n 1 ans; then
+            return 1   # EOF di stdin
+        fi
+        case $ans in
+            '') return 0 ;;       # Enter ditekan
+            q|Q) return 1 ;;
+        esac
+    done
+}
+
+mode_label() {
+    case $1 in
+        focus)        echo 'FOCUS SESSION' ;;
+        short_break)  echo 'SHORT BREAK' ;;
+        long_break)   echo 'LONG BREAK' ;;
+    esac
+}
+
+mode_duration() {
+    case $1 in
+        focus)        echo "$FOCUS_SECONDS" ;;
+        short_break)  echo "$SHORT_BREAK_SECONDS" ;;
+        long_break)   echo "$LONG_BREAK_SECONDS" ;;
+    esac
+}
+
+run_cycle() {
+    # $1 mode awal: focus|short_break|long_break
+    local mode=$1
+    local focus_done=0   # jumlah fokus selesai dalam siklus ini
+    local rc completed duration label next next_label msg
+
+    while :; do
+        duration=$(mode_duration "$mode")
+        label=$(mode_label "$mode")
+        set_mode_colors "$mode"
+
+        rc=0
+        run_timer "$duration" "$label" || rc=$?
+        if (( rc == 1 )); then
+            return 0    # quit
+        fi
+        completed=$(( rc == 0 ? 1 : 0 ))
+
+        if (( completed )); then
+            ring_bell
+            case $mode in
+                focus)
+                    notify 'Focus session complete' \
+                        "Nice work — $(( duration / 60 )) minutes of focus logged."
+                    log_session focus "$duration"
+                    focus_done=$(( focus_done + 1 ))
+                    ;;
+                short_break)
+                    notify 'Short break over' 'Ready for another focus session?'
+                    log_session short_break "$duration"
+                    ;;
+                long_break)
+                    notify 'Long break over' 'Refreshed — time to get back to work.'
+                    log_session long_break "$duration"
+                    ;;
+            esac
+            msg="$label finished — nothing skipped, all $(( duration / 60 )) min logged."
+        else
+            msg="$label skipped — nothing was logged."
+        fi
+
+        # Tentukan mode berikutnya: fokus -> break (panjang tiap ke-4), break -> fokus
+        if [[ $mode == focus ]]; then
+            if (( focus_done % CYCLES_BEFORE_LONG == 0 )); then
+                next=long_break
+            else
+                next=short_break
+            fi
+        else
+            next=focus
+        fi
+        next_label=$(mode_label "$next")
+
+        if (( completed )); then
+            if ! prompt_continue 'SESSION COMPLETE' "$msg" "$next_label"; then
+                return 0
+            fi
+        else
+            if ! prompt_continue 'SESSION SKIPPED' "$msg" "$next_label"; then
+                return 0
+            fi
+        fi
+        mode=$next
+    done
+}
+
+start_session() {
+    # $1 mode awal
+    validate_durations
+    init_terminal
+    run_cycle "$1"
+}
+
+# ================================= STATS ====================================
+
+show_stats() {
+    # Statistik dibaca dari HISTORY_FILE dengan format: tanggal|tipe|detik
+    if [[ ! -f $HISTORY_FILE ]]; then
+        printf 'No sessions recorded yet.\n'
+        printf 'Run "pomo" to start your first focus session.\n'
+        printf 'History will be saved in %s\n' "$HISTORY_FILE"
+        return 0
+    fi
+
+    # Akumulasi per tanggal (associative array)
+    local -A focus_count=() focus_secs=() break_count=()
+    local d t s
+    while IFS='|' read -r d t s || [[ -n ${d:-} ]]; do
+        if [[ -z ${d:-} ]]; then continue; fi
+        if [[ ! $d =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then continue; fi
+        if [[ ! $s =~ ^[0-9]+$ ]]; then continue; fi
+        case $t in
+            focus)
+                focus_count[$d]=$(( ${focus_count[$d]:-0} + 1 ))
+                focus_secs[$d]=$(( ${focus_secs[$d]:-0} + s ))
+                ;;
+            short_break|long_break)
+                break_count[$d]=$(( ${break_count[$d]:-0} + 1 ))
+                ;;
+        esac
+    done < "$HISTORY_FILE"
+
+    local today
+    today=$(date +%F)
+
+    printf '%sPomodoro Statistics%s\n' "$C_BOLD" "$C_RESET"
+    printf '\n'
+    printf '%sToday — %s%s\n' "$C_DIM" "$today" "$C_RESET"
+    printf '  Focus sessions : %s%s%s\n' "$C_GREEN" "${focus_count[$today]:-0}" "$C_RESET"
+    printf '  Focus minutes  : %s%s%s\n' "$C_GREEN" "$(( ${focus_secs[$today]:-0} / 60 ))" "$C_RESET"
+    printf '  Breaks taken   : %s%s%s\n' "$C_CYAN" "${break_count[$today]:-0}" "$C_RESET"
+
+    printf '\n'
+    printf '%sLast 7 days%s\n' "$C_BOLD" "$C_RESET"
+    printf '  %-12s %8s %8s\n' 'Date' 'Sessions' 'Minutes'
+
+    # Skala bar: berdasarkan hari terproduktif dalam 7 hari terakhir
+    local max_minutes=0 day mins i
+    for (( i = 6; i >= 0; i-- )); do
+        day=$(date -d "-$i day" +%F)
+        mins=$(( ${focus_secs[$day]:-0} / 60 ))
+        if (( mins > max_minutes )); then max_minutes=$mins; fi
+    done
+
+    local total_sessions=0 total_minutes=0 bar='' j filled
+    for (( i = 6; i >= 0; i-- )); do
+        day=$(date -d "-$i day" +%F)
+        mins=$(( ${focus_secs[$day]:-0} / 60 ))
+        total_sessions=$(( total_sessions + ${focus_count[$day]:-0} ))
+        total_minutes=$(( total_minutes + mins ))
+
+        bar=''
+        if (( max_minutes > 0 )); then
+            filled=$(( mins * 20 / max_minutes ))
+            for (( j = 0; j < filled; j++ )); do bar+='▓'; done
+        fi
+        printf '  %s%-12s%s %s%8s%s %s%8s%s  %s%s%s\n' \
+            "$C_CYAN" "$day" "$C_RESET" \
+            "$C_GREEN" "${focus_count[$day]:-0}" "$C_RESET" \
+            "$C_GREEN" "$mins" "$C_RESET" \
+            "$C_BAR" "$bar" "$C_RESET"
+    done
+
+    printf '\n'
+    printf '%s7-day total:%s %d sessions · %d minutes focused\n' \
+        "$C_DIM" "$C_RESET" "$total_sessions" "$total_minutes"
+}
+
+# ================================ HELP/VERSI ================================
+
+show_help() {
+    cat <<'EOF'
+pomo — an eye-catching pomodoro timer for your terminal
+
+Usage:
+  pomo                Start a focus session (25 minutes by default)
+  pomo start          Same as above
+  pomo -w             Start a short break (5 minutes)
+  pomo -W             Start a long break (15 minutes)
+  pomo stats          Show session statistics
+  pomo --help         Show this help
+  pomo --version      Show version
+
+Keys while the timer runs:
+  p                   Pause / resume
+  s                   Skip the current session
+  q                   Quit
+
+Cycle:
+  Every 4th completed focus session is followed by a long break;
+  the other focus sessions are followed by a short break.
+  You confirm before the next session starts.
+
+Data:
+  Completed sessions are logged to
+  ~/.local/share/pomo/history.log  (format: date|type|seconds)
+
+Configuration:
+  Edit the constants at the top of the script, or set:
+    POMO_FOCUS_SECONDS          default 1500  (25 min)
+    POMO_SHORT_BREAK_SECONDS    default 300   (5 min)
+    POMO_LONG_BREAK_SECONDS     default 900   (15 min)
+EOF
+}
+
+show_version() {
+    printf 'pomo %s\n' "$POMO_VERSION"
+}
+
+# ================================== MAIN ====================================
+
+main() {
+    local cmd=${1:-}
+    case $cmd in
+        ''|start)
+            start_session focus
+            ;;
+        -w|--short)
+            start_session short_break
+            ;;
+        -W|--long)
+            start_session long_break
+            ;;
+        stats)
+            show_stats
+            ;;
+        -h|--help|help)
+            show_help
+            ;;
+        -v|--version|version)
+            show_version
+            ;;
+        *)
+            die "unknown command or option: '$cmd'" "Try 'pomo --help' for usage information."
+            ;;
+    esac
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Bangun tabel glyph font sekali di awal
+font_init
+
+# Jalankan main hanya jika dieksekusi langsung (bukan di-source untuk testing)
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    main "$@"
+fi
