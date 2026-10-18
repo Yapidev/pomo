@@ -70,7 +70,9 @@ assert_contains '--help menyebut subcommand theme' "$out" 'pomo theme'
 assert_contains '--help menyebut daftar tema' "$out" 'Available themes: default, dracula'
 assert_contains '--help menyebut subcommand status' "$out" 'pomo status'
 assert_contains '--help menyebut subcommand config' "$out" 'pomo config'
+assert_contains '--help menyebut subcommand resume' "$out" 'pomo resume'
 assert_contains '--help menyebut file konfigurasi' "$out" 'pomo.conf'
+assert_contains '--help menyebut hook notifikasi' "$out" 'NOTIFY_CMD'
 
 # ------------------------------------------------------ stats tanpa data
 export XDG_DATA_HOME="$TMP/data-empty"
@@ -184,7 +186,8 @@ unit_rc=0
     # reveal parsial: campuran spasi dan block, lebar tetap 5
     out=$(pixel_anim '█████' 0 0 50)
     [[ ${#out} == 5 && $out == *█* && $out == *' '* ]]
-) || unit_rc=$?
+)
+unit_rc=$?
 assert_eq 'apply_theme + cycle_theme + set_mode_colors: benar' "$unit_rc" '0'
 
 
@@ -240,11 +243,74 @@ printf 'focus|%s|%s|1500|0|0\n' "$dead" "$(( $(date +%s) + 100 ))" > "$XDG_RUNTI
 out=$(bash "$POMO" status 2>&1); rc=$?
 assert_contains 'status: state basi dibaca sebagai idle' "$out" 'idle'
 assert_eq 'status: state basi exit code 1' "$rc" '1'
-if [[ ! -f $XDG_RUNTIME_DIR/pomo.state ]]; then
-    ok 'status: state basi dibersihkan dari disk'
+if [[ -f $XDG_RUNTIME_DIR/pomo.state ]]; then
+    ok 'status: state basi dibiarkan agar bisa diresume'
 else
-    ko 'status: state basi dibersihkan dari disk' 'file masih ada'
+    ko 'status: state basi dibiarkan agar bisa diresume' 'file terhapus'
 fi
+
+# ---------------------------------------------- resume: end-to-end (kill -9)
+export XDG_DATA_HOME="$TMP/data-resume"
+rm -f "$XDG_RUNTIME_DIR/pomo.state"
+PATH="$TMP/fakebin:$PATH" POMO_FOCUS_SECONDS=5 POMO_ANIMATION=off \
+    bash "$POMO" start >/dev/null 2>&1 &
+victim=$!
+sleep 2
+kill -9 "$victim"
+wait "$victim" 2>/dev/null || true
+if [[ -f $XDG_RUNTIME_DIR/pomo.state ]]; then
+    ok 'resume: kill -9 meninggalkan state'
+else
+    ko 'resume: kill -9 meninggalkan state' 'file state tidak ada'
+fi
+PATH="$TMP/fakebin:$PATH" POMO_FOCUS_SECONDS=5 POMO_ANIMATION=off \
+    bash "$POMO" resume >/dev/null 2>&1
+rc=$?
+assert_eq 'resume: sesi sisa selesai dengan exit 0' "$rc" '0'
+if [[ ! -f $XDG_RUNTIME_DIR/pomo.state ]]; then
+    ok 'resume: state dibersihkan setelah selesai'
+else
+    ko 'resume: state dibersihkan setelah selesai' "sisa: $(cat "$XDG_RUNTIME_DIR/pomo.state")"
+fi
+if grep -q '|focus|5$' "$XDG_DATA_HOME/pomo/history.log"; then
+    ok 'resume: durasi penuh ter-log'
+else
+    ko 'resume: durasi penuh ter-log' 'history tanpa baris fokus 5s'
+fi
+
+# ---------------------------------------------------- resume: tanpa state
+rm -f "$XDG_RUNTIME_DIR/pomo.state"
+out=$(bash "$POMO" resume 2>&1); rc=$?
+assert_eq 'resume tanpa state: exit code 1' "$rc" '1'
+assert_contains 'resume tanpa state: pesan jelas' "$out" 'no interrupted session to resume'
+
+# ---------------------------------------------------- resume: kedaluwarsa
+bash -c 'sleep 0.05' & dead2=$!
+wait "$dead2"
+printf 'focus|%s|%s|1500|0|0\n' "$dead2" "$(( $(date +%s) - 10 ))" > "$XDG_RUNTIME_DIR/pomo.state"
+out=$(bash "$POMO" resume 2>&1); rc=$?
+assert_eq 'resume kedaluwarsa: exit code 1' "$rc" '1'
+assert_contains 'resume kedaluwarsa: pesan jelas' "$out" 'already ran out of time'
+if [[ ! -f $XDG_RUNTIME_DIR/pomo.state ]]; then
+    ok 'resume kedaluwarsa: state dibuang'
+else
+    ko 'resume kedaluwarsa: state dibuang' 'file masih ada'
+fi
+
+# ------------------------------------------------------ notify hook (env)
+export XDG_DATA_HOME="$TMP/data-notify"
+out=$(PATH="$TMP/fakebin:$PATH" POMO_FOCUS_SECONDS=2 POMO_ANIMATION=off \
+    POMO_NOTIFY_CMD='printf HOOK:%s:%s "$1" "$2"' bash "$POMO" start 2>&1)
+assert_contains 'notify hook: dipanggil dengan judul' "$out" 'HOOK:Focus session complete:'
+assert_contains 'notify hook: menerima isi pesan' "$out" 'minutes of focus logged'
+
+# ------------------------------------------------ notify hook lewat pomo.conf
+printf 'NOTIFY_CMD=paplay bell.ogg\n' > "$XDG_CONFIG_HOME/pomo/pomo.conf"
+out=$(bash "$POMO" config 2>&1)
+assert_contains 'config: notify_cmd dari file ditampilkan' "$out" 'Notify hook : paplay bell.ogg'
+out=$(POMO_NOTIFY_CMD='envhook cmd' bash "$POMO" config 2>&1)
+assert_contains 'config: env notify meng-override file' "$out" 'Notify hook : envhook cmd'
+rm -f "$XDG_CONFIG_HOME/pomo/pomo.conf"
 
 # ------------------------------------------ unit: write_state + show_status
 unit_rc=0
@@ -283,8 +349,42 @@ unit_rc=0
 
     printf 'garbage\n' > "$XDG_RUNTIME_DIR/pomo.state"
     [[ $(show_status) == 'idle' ]]
-) || unit_rc=$?
+)
+unit_rc=$?
 assert_eq 'unit: write_state + show_status + clear_state' "$unit_rc" '0'
+
+# ------------------------------------------ unit: resume_read_state
+unit_rc=0
+(
+    set -e
+    export XDG_RUNTIME_DIR="$TMP/run-resume"
+    mkdir -p "$XDG_RUNTIME_DIR"
+    source "$POMO"
+
+    # terputus dalam kondisi pause: sisa = frozen
+    bash -c 'sleep 0.05' & d=$!
+    wait "$d"
+    printf 'short_break|%s|%s|300|1|123\n' "$d" "$(( $(now) + 100 ))" > "$STATE_FILE"
+    resume_read_state
+    [[ $RESUME_MODE == short_break ]]
+    [[ $RESUME_REMAINING == 123 ]]
+
+    # penulis masih hidup: rc 3 (sesi masih berjalan)
+    sleep 30 & live=$!
+    printf 'focus|%s|%s|1500|0|0\n' "$live" "$(( $(now) + 100 ))" > "$STATE_FILE"
+    rc=0; resume_read_state || rc=$?
+    [[ $rc == 3 ]]
+    kill "$live" 2>/dev/null
+    wait "$live" 2>/dev/null || true
+
+    # state rusak: rc 1
+    printf 'garbage\n' > "$STATE_FILE"
+    rc=0; resume_read_state || rc=$?
+    [[ $rc == 1 ]]
+    [[ -z $RESUME_MODE ]]
+)
+unit_rc=$?
+assert_eq 'unit: resume_read_state (paused/hidup/rusak)' "$unit_rc" '0'
 
 # ---------------------------------------------- unit: log_session + read_history
 unit_rc=0
@@ -304,7 +404,8 @@ unit_rc=0
     [[ ${FOCUS_COUNT[$d]} == 2 ]] || exit 1
     [[ $(( ${FOCUS_SECS[$d]} )) == 3300 ]] || exit 1
     [[ ${BREAK_COUNT[$d]} == 1 ]] || exit 1
-) || unit_rc=$?
+)
+unit_rc=$?
 assert_eq 'log_session + read_history: agregasi benar' "$unit_rc" '0'
 
 # --------------------------------------------- unit: log_session menolak input rusak
@@ -316,7 +417,8 @@ unit_rc=0
     log_session focus abc && exit 1   # harus gagal, bukan menulis
     log_session '' 1500 && exit 1
     [[ ! -e $HISTORY_FILE ]]
-) || unit_rc=$?
+)
+unit_rc=$?
 assert_eq 'log_session: input rusak tidak menulis file' "$unit_rc" '0'
 
 # ------------------------------------------------- update: file read-only
