@@ -77,6 +77,7 @@ Only **completed** sessions are logged — skipping or switching writes nothing.
 | `pomo`          | Start a focus session (25 min)     |
 | `pomo -w`       | Short break (5 min)                 |
 | `pomo -W`       | Long break (15 min)                |
+| `pomo resume`   | Resume an interrupted session       |
 | `pomo stats`    | Today's summary + 7-day chart      |
 | `pomo status`   | One-line status for status bars    |
 | `pomo config`   | Show config file + durations       |
@@ -143,6 +144,29 @@ set -g status-right '#(pomo status)'
 The running timer publishes its state in
 `${XDG_RUNTIME_DIR:-~/.local/share/pomo}/pomo.state`, so `pomo status`
 works from any other terminal.
+
+## Interrupted sessions
+
+If pomo is killed or the terminal closes mid-session, the remaining time
+is kept — `pomo resume` continues where it stopped, with the progress
+bar still scaled to the full session. Completed sessions are logged with
+their full duration, even when finished across multiple sittings.
+
+A session that already ran out of time while pomo was closed is
+discarded: `pomo resume` says so and logs nothing.
+
+## Notifications
+
+By default pomo rings the terminal bell and sends a desktop
+notification with `notify-send`. Want a sound, a webhook, or something
+else instead? Set a hook (in `pomo.conf` or via `POMO_NOTIFY_CMD`):
+
+```console
+NOTIFY_CMD=paplay /usr/share/sounds/freedesktop/stereo/complete.oga
+NOTIFY_CMD=notify-send -u normal pomo "$1" && paplay bell.ogg
+```
+
+The hook receives the title and the message as `$1` and `$2`.
 
 The timer animates like a pixel display: digits light up pixel by pixel
 at session start and the colon blinks every second —

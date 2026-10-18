@@ -50,6 +50,11 @@ FOCUS_SECONDS="${POMO_FOCUS_SECONDS:-1500}"         # 25 menit
 SHORT_BREAK_SECONDS="${POMO_SHORT_BREAK_SECONDS:-300}"   # 5 menit
 LONG_BREAK_SECONDS="${POMO_LONG_BREAK_SECONDS:-900}"     # 15 menit
 
+# Hook notifikasi opsional: string perintah yang dipanggil sebagai
+# bash -c "<NOTIFY_CMD>" pomo "<judul>" "<isi>" saat sesi selesai.
+# Diisi lewat env POMO_NOTIFY_CMD atau key NOTIFY_CMD di pomo.conf.
+NOTIFY_CMD="${POMO_NOTIFY_CMD:-}"
+
 # Jumlah sesi fokus sebelum berhak dapat break panjang
 readonly CYCLES_BEFORE_LONG=4
 
@@ -291,31 +296,43 @@ validate_durations() {
 
 load_config() {
     [[ -f $CONFIG_FILE ]] || return 0
-    local line key value
+    local line key value raw
     while IFS= read -r line || [[ -n $line ]]; do
-        line=${line%%#*}                 # buang komentar (satu baris maupun inline)
+        # Komentar satu baris penuh. '#' inline hanya dipahami untuk kunci
+        # durasi; untuk NOTIFY_CMD '#' dianggap bagian dari perintah.
+        [[ $line == [[:space:]]#* ]] && continue
         [[ $line == *=* ]] || continue
         key=${line%%=*}
-        value=${line#*=}
+        raw=${line#*=}
         key=${key//$'\t'/}; key=${key// /}
         key=${key^^}
         case $key in
-            FOCUS_SECONDS|SHORT_BREAK_SECONDS|LONG_BREAK_SECONDS) ;;
-            *) continue ;;               # kunci tak dikenal: abaikan
-        esac
-        value=${value// /}
-        if [[ ! $value =~ ^[0-9]+$ ]] || (( value == 0 )); then
-            die "invalid value in $CONFIG_FILE: $key must be a positive integer (got '$value')"
-        fi
-        case $key in
-            FOCUS_SECONDS)
-                [[ -z ${POMO_FOCUS_SECONDS:-} ]] && FOCUS_SECONDS=$value ;;
-            SHORT_BREAK_SECONDS)
-                [[ -z ${POMO_SHORT_BREAK_SECONDS:-} ]] && SHORT_BREAK_SECONDS=$value ;;
-            LONG_BREAK_SECONDS)
-                [[ -z ${POMO_LONG_BREAK_SECONDS:-} ]] && LONG_BREAK_SECONDS=$value ;;
+            FOCUS_SECONDS|SHORT_BREAK_SECONDS|LONG_BREAK_SECONDS)
+                value=${raw%%#*}                 # buang komentar inline
+                value=${value// /}
+                if [[ ! $value =~ ^[0-9]+$ ]] || (( value == 0 )); then
+                    die "invalid value in $CONFIG_FILE: $key must be a positive integer (got '$value')"
+                fi
+                case $key in
+                    FOCUS_SECONDS)
+                        [[ -z ${POMO_FOCUS_SECONDS:-} ]] && FOCUS_SECONDS=$value ;;
+                    SHORT_BREAK_SECONDS)
+                        [[ -z ${POMO_SHORT_BREAK_SECONDS:-} ]] && SHORT_BREAK_SECONDS=$value ;;
+                    LONG_BREAK_SECONDS)
+                        [[ -z ${POMO_LONG_BREAK_SECONDS:-} ]] && LONG_BREAK_SECONDS=$value ;;
+                esac
+                ;;
+            NOTIFY_CMD)
+                # Nilai mentah: spasi & '#' dipertahankan, hanya spasi
+                # di tepi yang dibuang.
+                value=$raw
+                value=${value#"${value%%[![:space:]]*}"}
+                value=${value%"${value##*[![:space:]]}"}
+                [[ -z ${POMO_NOTIFY_CMD:-} ]] && NOTIFY_CMD=$value
+                ;;
         esac
     done < "$CONFIG_FILE"
+    return 0
 }
 
 show_config() {
@@ -328,9 +345,15 @@ show_config() {
     printf 'Focus         : %d s (%d min)\n' "$FOCUS_SECONDS" "$(( FOCUS_SECONDS / 60 ))"
     printf 'Short break   : %d s (%d min)\n' "$SHORT_BREAK_SECONDS" "$(( SHORT_BREAK_SECONDS / 60 ))"
     printf 'Long break    : %d s (%d min)\n' "$LONG_BREAK_SECONDS" "$(( LONG_BREAK_SECONDS / 60 ))"
+    if [[ -n $NOTIFY_CMD ]]; then
+        printf 'Notify hook : %s\n' "$NOTIFY_CMD"
+    else
+        printf 'Notify hook : (default: notify-send)\n'
+    fi
     if [[ ! -f $CONFIG_FILE ]]; then
         printf 'To change durations permanently, create the file with lines like:\n'
         printf '  FOCUS_SECONDS=1800        # 30 min\n'
+        printf '  NOTIFY_CMD=paplay /usr/share/sounds/freedesktop/stereo/complete.oga\n'
     fi
 }
 
@@ -377,7 +400,14 @@ cleanup() {
 # ============================== NOTIFIKASI ==================================
 
 notify() {
-    # $1 judul, $2 isi. notify-send opsional; bell tetap dibunyikan.
+    # $1 judul, $2 isi.
+    # Jika NOTIFY_CMD terisi, hook itu yang dipanggil (menerima judul dan
+    # isi sebagai $1/$2). Tanpa hook: notify-send (opsional). Bell selalu
+    # tetap dibunyikan oleh pemanggil.
+    if [[ -n $NOTIFY_CMD ]]; then
+        bash -c "$NOTIFY_CMD" pomo "$1" "$2" || true
+        return 0
+    fi
     if command -v notify-send >/dev/null 2>&1; then
         notify-send -u critical -a pomo "$1" "$2" || true
     fi
@@ -418,11 +448,9 @@ clear_state() {
     # agar instance pomo lain yang kebetulan jalan tidak ikut terhapus.
     # Selalu return 0: dipanggil dari trap EXIT, dan return value trap
     # menimpa exit code pomo.
-    local owner
+    local mode owner rest
     [[ -f $STATE_FILE ]] || return 0
-    IFS= read -r owner < "$STATE_FILE" || return 0
-    owner=${owner#*|}
-    owner=${owner%%|}
+    IFS='|' read -r mode owner rest < "$STATE_FILE" || return 0
     if [[ $owner == "$$" ]]; then
         rm -f "$STATE_FILE"
     fi
@@ -445,9 +473,10 @@ show_status() {
         printf 'idle\n'
         return 1
     fi
-    # Penulis state sudah mati (crash/kill): status basi, buang.
+    # Penulis state sudah mati (terminal tertutup/crash): tidak ada sesi
+    # aktif. File TIDAK dihapus — sisa waktunya bisa dilanjutkan dengan
+    # "pomo resume".
     if (( pid != $$ )) && ! kill -0 "$pid" 2>/dev/null; then
-        rm -f "$STATE_FILE"
         printf 'idle\n'
         return 1
     fi
@@ -469,6 +498,71 @@ show_status() {
     fi
     printf '\n'
     return 0
+}
+
+# Sisa waktu sesi yang terputus; diisi resume_read_state(), dikonsumsi
+# run_cycle() untuk sesi pertamanya.
+RESUME_MODE=''
+RESUME_REMAINING=0
+
+resume_read_state() {
+    # Baca & validasi state untuk "pomo resume". Set RESUME_MODE dan
+    # RESUME_REMAINING bila sesi valid.
+    # Return: 0 = siap dilanjutkan, 1 = tidak ada state yang bisa dipakai,
+    #         2 = sesi kedaluwarsa (sudah kehabisan waktu saat pomo mati),
+    #         3 = sesi masih berjalan di proses lain.
+    RESUME_MODE=''
+    RESUME_REMAINING=0
+    local mode pid end total paused frozen
+    if [[ ! -f $STATE_FILE ]]; then
+        return 1
+    fi
+    IFS='|' read -r mode pid end total paused frozen < "$STATE_FILE" || return 1
+    if [[ ! $mode =~ ^(focus|short_break|long_break)$ ]] \
+        || [[ ! $pid =~ ^[0-9]+$ ]] || [[ ! $end =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    # Penulis state masih hidup: sesi itu masih berjalan, bukan terputus.
+    if (( pid != $$ )) && kill -0 "$pid" 2>/dev/null; then
+        return 3
+    fi
+    if [[ $paused == 1 ]]; then
+        # Terputus dalam kondisi pause: sisa waktu tersimpan di state.
+        [[ $frozen =~ ^[0-9]+$ ]] || return 1
+        RESUME_REMAINING=$frozen
+    else
+        RESUME_REMAINING=$(( end - $(now) ))
+        if (( RESUME_REMAINING <= 0 )); then
+            return 2
+        fi
+    fi
+    RESUME_MODE=$mode
+    return 0
+}
+
+resume_session() {
+    # Validasi state terputus, lalu masuk siklus normal memakai mode dan
+    # sisa waktu dari state. Sesi yang selesai setelah resume ter-log
+    # dengan durasi penuh: waktunya memang dikerjakan semua, hanya
+    # terpotong jeda.
+    local rc=0
+    resume_read_state || rc=$?
+    case $rc in
+        1)
+            die "no interrupted session to resume" \
+                "Run \"pomo\" to start a new session."
+            ;;
+        2)
+            rm -f "$STATE_FILE"
+            die "the interrupted session already ran out of time while pomo was closed" \
+                "Nothing was logged. Run \"pomo\" to start a fresh session."
+            ;;
+        3)
+            die "a session is still running in another terminal" \
+                "Check with \"pomo status\", or quit that session first."
+            ;;
+    esac
+    start_session "$RESUME_MODE"
 }
 
 # =============================== GAMBAR UI ==================================
@@ -809,17 +903,19 @@ open_menu() {
 
 run_timer() {
     # $1 durasi detik, $2 judul mode
+    # $3 (opsional) sisa detik awal — dipakai "pomo resume" untuk mulai
+    #     dari sisa waktu; progress bar tetap dihitung dari durasi penuh $1.
     # Return: 0 = selesai, 1 = user quit, 2 = user skip,
     #         3 = ganti ke short break (menu), 4 = ganti ke long break (menu),
     #         5 = ganti ke focus (menu)
-    local total=$1 label=$2
+    local total=$1 label=$2 start=${3:-$1}
     local end now remaining frozen paused=0 key rc
     local last_frame=''
     local menu_was_paused=0
 
-    end=$(( $(now) + total ))
-    frozen=$total
-    write_state "$end" "$total" 0 "$total"
+    end=$(( $(now) + start ))
+    frozen=$start
+    write_state "$end" "$total" 0 "$start"
 
     # Animasi intro: digit besar menyala piksel demi piksel (~0.35s),
     # hanya di terminal interaktif yang cukup besar.
@@ -962,18 +1058,29 @@ mode_duration() {
 
 run_cycle() {
     # $1 mode awal: focus|short_break|long_break
+    # Jika RESUME_REMAINING > 0 (dari "pomo resume"), sesi pertama dimulai
+    # dari sisa waktu itu; sesi-sesi berikutnya normal.
     local mode=$1
     local focus_done=0   # jumlah fokus selesai dalam siklus ini
+    local resume_remaining=${RESUME_REMAINING:-0}
+    RESUME_REMAINING=0
     local rc completed duration label next next_label msg
 
     while :; do
         duration=$(mode_duration "$mode")
+        # Sisa resume tidak boleh melebihi durasi mode (state basi/rusak)
+        (( resume_remaining > duration )) && resume_remaining=$duration
         label=$(mode_label "$mode")
         CURRENT_MODE=$mode
         set_mode_colors "$mode"
 
         rc=0
-        run_timer "$duration" "$label" || rc=$?
+        if (( resume_remaining )); then
+            run_timer "$duration" "$label" "$resume_remaining" || rc=$?
+            resume_remaining=0
+        else
+            run_timer "$duration" "$label" || rc=$?
+        fi
         clear_state
         case $rc in
             1)
@@ -1146,6 +1253,7 @@ Usage:
   pomo start          Same as above
   pomo -w             Start a short break (5 minutes)
   pomo -W             Start a long break (15 minutes)
+  pomo resume         Resume the last interrupted session
   pomo stats          Show session statistics
   pomo status         One-line status for status bars (tmux/waybar)
   pomo theme [name]   Show the current theme, or set the theme
@@ -1178,12 +1286,24 @@ Status bar:
   Exit code: 0 while a session is active, 1 otherwise.
   Examples: tmux  #(pomo status)   ·   waybar  {"exec": "pomo status"}
 
+Interrupted sessions:
+  If pomo is killed or the terminal closes mid-session, the leftover time
+  is kept. Run "pomo resume" to continue where it stopped.
+  A session that already ran out of time while pomo was closed is
+  discarded — nothing is logged for it.
+
+Notifications:
+  By default pomo rings the terminal bell and calls notify-send.
+  Set NOTIFY_CMD to run your own command instead; it receives the title
+  and the message as "$1" and "$2", e.g. a sound or a webhook.
+
 Configuration:
   Optional config file: ~/.config/pomo/pomo.conf (XDG_CONFIG_HOME respected).
   Format: KEY=value, one per line, '#' starts a comment. Keys:
     FOCUS_SECONDS          default 1500  (25 min)
     SHORT_BREAK_SECONDS    default 300   (5 min)
     LONG_BREAK_SECONDS     default 900   (15 min)
+    NOTIFY_CMD             notification hook, replaces notify-send
   Precedence: environment variable > pomo.conf > default.
   Per-run environment overrides:
     POMO_FOCUS_SECONDS          default 1500  (25 min)
@@ -1191,6 +1311,7 @@ Configuration:
     POMO_LONG_BREAK_SECONDS     default 900   (15 min)
     POMO_THEME                  color theme, e.g. nord
     POMO_ANIMATION              set to "off" to disable the pixel animations
+    POMO_NOTIFY_CMD             notification hook, same as NOTIFY_CMD
 
 Themes:
   Available themes: default, dracula, gruvbox, nord, solarized, matrix, mono
@@ -1279,6 +1400,9 @@ main() {
             ;;
         -W|--long)
             start_session long_break
+            ;;
+        resume)
+            resume_session
             ;;
         stats)
             show_stats
