@@ -1,3 +1,15 @@
+pomo (1.4.0-1) unstable; urgency=medium
+
+  * Config file pomo.conf for durations and the NOTIFY_CMD hook.
+  * "pomo status" one-line output for status bars (tmux/waybar), with
+    --json for status-bar styling.
+  * "pomo resume" continues a session interrupted by a closed terminal
+    or a crash.
+  * build-deb.sh now derives the package version from POMO_VERSION in
+    the script itself, so the .deb label always matches.
+
+ -- Yapidev <yapidev@users.noreply.github.com>  Sun, 18 Oct 2026 21:28:40 +0700
+
 pomo (1.0.0-1) unstable; urgency=medium
 
   * Initial release of pomo, a pomodoro timer TUI in pure Bash.

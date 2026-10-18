@@ -458,26 +458,32 @@ clear_state() {
 }
 
 show_status() {
-    # Satu baris untuk statusbar: "focus 12:34", "long break 03:21 (paused)",
-    # atau "idle". Exit 0 jika ada sesi berjalan, 1 jika tidak —
-    # memudahkan skrip statusbar bereaksi.
+    # $1 opsional: "--json" → format JSON untuk statusbar (waybar/polybar).
+    # Default: satu baris teks "focus 12:34" / "... (paused)" / "idle".
+    # Exit 0 jika ada sesi berjalan, 1 jika tidak — memudahkan skrip
+    # statusbar bereaksi. Untuk --json, class berupa array: mode aktif
+    # (focus|short_break|long_break|idle) plus "paused" bila pause.
+    local fmt=${1:-}
     local mode pid end total paused frozen remaining label
-    if [[ ! -f $STATE_FILE ]]; then
-        printf 'idle\n'
-        return 1
+    local active=0
+    if [[ -f $STATE_FILE ]] \
+        && IFS='|' read -r mode pid end total paused frozen < "$STATE_FILE"; then
+        if [[ $mode =~ ^(focus|short_break|long_break)$ ]] \
+            && [[ $end =~ ^[0-9]+$ ]] && [[ $total =~ ^[0-9]+$ ]] \
+            && [[ $pid =~ ^[0-9]+$ ]] \
+            && { (( pid == $$ )) || kill -0 "$pid" 2>/dev/null; }; then
+            # Field valid dan penulisnya (masih) hidup → sesi berjalan.
+            # Penulis yang sudah mati = sesi terputus: dilaporkan idle,
+            # file dibiarkan agar bisa dilanjutkan dengan "pomo resume".
+            active=1
+        fi
     fi
-    IFS='|' read -r mode pid end total paused frozen < "$STATE_FILE" || { printf 'idle\n'; return 1; }
-    if [[ ! $mode =~ ^(focus|short_break|long_break)$ ]] \
-        || [[ ! $end =~ ^[0-9]+$ ]] || [[ ! $total =~ ^[0-9]+$ ]] \
-        || [[ ! $pid =~ ^[0-9]+$ ]]; then
-        printf 'idle\n'
-        return 1
-    fi
-    # Penulis state sudah mati (terminal tertutup/crash): tidak ada sesi
-    # aktif. File TIDAK dihapus — sisa waktunya bisa dilanjutkan dengan
-    # "pomo resume".
-    if (( pid != $$ )) && ! kill -0 "$pid" 2>/dev/null; then
-        printf 'idle\n'
+    if (( active == 0 )); then
+        if [[ $fmt == --json ]]; then
+            printf '{"text":"idle","alt":"idle","tooltip":"No pomo session running","class":["idle"],"paused":false}\n'
+        else
+            printf 'idle\n'
+        fi
         return 1
     fi
     if [[ $paused == 1 ]]; then
@@ -492,6 +498,21 @@ show_status() {
         short_break)  label='short break' ;;
         long_break)   label='long break' ;;
     esac
+    if [[ $fmt == --json ]]; then
+        local classes="\"$mode\""
+        if [[ $paused == 1 ]]; then
+            classes="$classes,\"paused\""
+        fi
+        printf '{"text":"%s %02d:%02d","alt":"%s","tooltip":"%s — %02d:%02d left of %02d:%02d","class":[%s],"paused":%s}\n' \
+            "$label" "$(( remaining / 60 ))" "$(( remaining % 60 ))" \
+            "$mode" \
+            "$(mode_label "$mode")" \
+            "$(( remaining / 60 ))" "$(( remaining % 60 ))" \
+            "$(( total / 60 ))" "$(( total % 60 ))" \
+            "$classes" \
+            "$([[ $paused == 1 ]] && printf true || printf false)"
+        return 0
+    fi
     printf '%s %02d:%02d' "$label" "$(( remaining / 60 ))" "$(( remaining % 60 ))"
     if [[ $paused == 1 ]]; then
         printf ' (paused)'
@@ -1256,6 +1277,7 @@ Usage:
   pomo resume         Resume the last interrupted session
   pomo stats          Show session statistics
   pomo status         One-line status for status bars (tmux/waybar)
+  pomo status --json  Same, as JSON with class/tooltip for styling
   pomo theme [name]   Show the current theme, or set the theme
   pomo themes         Same as "pomo theme"
   pomo config         Show config file location and effective durations
@@ -1283,8 +1305,11 @@ Data:
 Status bar:
   "pomo status" prints one line, e.g. "focus 12:34" or "short break 03:21
   (paused)", or "idle" when no timer is running.
+  "pomo status --json" prints {"text","alt","tooltip","class","paused"}
+  instead — class is an array with the active mode (focus, short_break,
+  long_break, idle) and "paused" when paused, for CSS styling.
   Exit code: 0 while a session is active, 1 otherwise.
-  Examples: tmux  #(pomo status)   ·   waybar  {"exec": "pomo status"}
+  Examples: tmux  #(pomo status)   ·   waybar  {"exec": "pomo status --json"}
 
 Interrupted sessions:
   If pomo is killed or the terminal closes mid-session, the leftover time
@@ -1408,7 +1433,7 @@ main() {
             show_stats
             ;;
         status)
-            show_status
+            show_status "${2:-}"
             ;;
         config)
             show_config

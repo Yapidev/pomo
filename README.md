@@ -138,7 +138,16 @@ set -g status-right '#(pomo status)'
 
 ```json
 // waybar
-"custom/pomo": { "exec": "pomo status", "interval": 1 }
+"custom/pomo": { "exec": "pomo status --json", "return-type": "json", "interval": 1 }
+```
+
+`--json` emits `{"text", "alt", "tooltip", "class", "paused"}` —
+`class` is an array with the active mode (`focus`, `short_break`,
+`long_break`, `idle`) plus `paused` when paused, so you can style it:
+
+```css
+#custom-pomo { color: #a6e3a1; }
+#custom-pomo.paused { color: #f9e2af; }
 ```
 
 The running timer publishes its state in
