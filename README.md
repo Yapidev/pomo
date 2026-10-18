@@ -78,6 +78,8 @@ Only **completed** sessions are logged — skipping or switching writes nothing.
 | `pomo -w`       | Short break (5 min)                 |
 | `pomo -W`       | Long break (15 min)                |
 | `pomo stats`    | Today's summary + 7-day chart      |
+| `pomo status`   | One-line status for status bars    |
+| `pomo config`   | Show config file + durations       |
 | `pomo theme`    | Show / pick a color theme          |
 | `pomo update`   | Self-update from GitHub            |
 | `pomo --help`   | Everything above, in the terminal |
@@ -101,12 +103,46 @@ saved automatically.
 
 ## Custom durations
 
+Per run:
+
 ```console
 POMO_FOCUS_SECONDS=1800 pomo        # 30 min focus
 POMO_SHORT_BREAK_SECONDS=600 pomo -w # 10 min short break
 POMO_LONG_BREAK_SECONDS=1200 pomo -W # 20 min long break
 POMO_ANIMATION=off pomo             # disable the pixel animations
 ```
+
+Or permanently, in `~/.config/pomo/pomo.conf`:
+
+```console
+FOCUS_SECONDS=1800        # 30 min
+SHORT_BREAK_SECONDS=600
+LONG_BREAK_SECONDS=1200
+```
+
+Keys are case-insensitive, `#` starts a comment, unknown keys are ignored.
+Precedence: environment variable > `pomo.conf` > default.
+`pomo config` shows the file path and the durations currently in effect.
+
+## Status bar
+
+`pomo status` prints one plain line — `focus 12:34`,
+`short break 03:21 (paused)`, or `idle` — and exits `0` while a
+session is running (`1` otherwise). Drop it straight into a bar:
+
+```console
+# tmux
+set -g status-right '#(pomo status)'
+```
+
+```json
+// waybar
+"custom/pomo": { "exec": "pomo status", "interval": 1 }
+```
+
+The running timer publishes its state in
+`${XDG_RUNTIME_DIR:-~/.local/share/pomo}/pomo.state`, so `pomo status`
+works from any other terminal.
 
 The timer animates like a pixel display: digits light up pixel by pixel
 at session start and the colon blinks every second —

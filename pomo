@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ================================ KONSTANTA =================================
 
-readonly POMO_VERSION="1.3.3"
+readonly POMO_VERSION="1.4.0"
 
 # URL script mentah di GitHub; dipakai oleh subcommand "update"
 readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
@@ -34,11 +34,17 @@ readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
 readonly DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pomo"
 readonly HISTORY_FILE="$DATA_DIR/history.log"
 
+# File status sesi aktif: ditulis oleh timer yang sedang berjalan, dibaca
+# oleh "pomo status" (untuk statusbar tmux/waybar). Di XDG_RUNTIME_DIR
+# (tmpfs) bila tersedia agar hilang otomatis saat logout.
+readonly STATE_FILE="${XDG_RUNTIME_DIR:-$DATA_DIR}/pomo.state"
+
 # Konfigurasi tema juga mengikuti XDG; fallback ke ~/.config
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pomo"
 readonly THEME_FILE="$CONFIG_DIR/theme"
+readonly CONFIG_FILE="$CONFIG_DIR/pomo.conf"
 
-# Durasi sesi dalam DETIK. Bisa dioverride lewat environment:
+# Durasi sesi dalam DETIK. Prioritas: env > pomo.conf > default ini.
 #   POMO_FOCUS_SECONDS, POMO_SHORT_BREAK_SECONDS, POMO_LONG_BREAK_SECONDS
 FOCUS_SECONDS="${POMO_FOCUS_SECONDS:-1500}"         # 25 menit
 SHORT_BREAK_SECONDS="${POMO_SHORT_BREAK_SECONDS:-300}"   # 5 menit
@@ -277,6 +283,57 @@ validate_durations() {
     done
 }
 
+# =============================== KONFIGURASI ================================
+# File konfigurasi opsional: $CONFIG_DIR/pomo.conf (XDG dihormati).
+# Format: KEY=value per baris; '#' memulai komentar. Kunci (case-insensitive):
+#   FOCUS_SECONDS, SHORT_BREAK_SECONDS, LONG_BREAK_SECONDS
+# Prioritas sama seperti tema: environment variable > file > default.
+
+load_config() {
+    [[ -f $CONFIG_FILE ]] || return 0
+    local line key value
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%%#*}                 # buang komentar (satu baris maupun inline)
+        [[ $line == *=* ]] || continue
+        key=${line%%=*}
+        value=${line#*=}
+        key=${key//$'\t'/}; key=${key// /}
+        key=${key^^}
+        case $key in
+            FOCUS_SECONDS|SHORT_BREAK_SECONDS|LONG_BREAK_SECONDS) ;;
+            *) continue ;;               # kunci tak dikenal: abaikan
+        esac
+        value=${value// /}
+        if [[ ! $value =~ ^[0-9]+$ ]] || (( value == 0 )); then
+            die "invalid value in $CONFIG_FILE: $key must be a positive integer (got '$value')"
+        fi
+        case $key in
+            FOCUS_SECONDS)
+                [[ -z ${POMO_FOCUS_SECONDS:-} ]] && FOCUS_SECONDS=$value ;;
+            SHORT_BREAK_SECONDS)
+                [[ -z ${POMO_SHORT_BREAK_SECONDS:-} ]] && SHORT_BREAK_SECONDS=$value ;;
+            LONG_BREAK_SECONDS)
+                [[ -z ${POMO_LONG_BREAK_SECONDS:-} ]] && LONG_BREAK_SECONDS=$value ;;
+        esac
+    done < "$CONFIG_FILE"
+}
+
+show_config() {
+    if [[ -f $CONFIG_FILE ]]; then
+        printf 'Config file : %s (active)\n' "$CONFIG_FILE"
+    else
+        printf 'Config file : %s (not created yet)\n' "$CONFIG_FILE"
+    fi
+    printf 'Precedence  : environment variable > pomo.conf > default\n'
+    printf 'Focus         : %d s (%d min)\n' "$FOCUS_SECONDS" "$(( FOCUS_SECONDS / 60 ))"
+    printf 'Short break   : %d s (%d min)\n' "$SHORT_BREAK_SECONDS" "$(( SHORT_BREAK_SECONDS / 60 ))"
+    printf 'Long break    : %d s (%d min)\n' "$LONG_BREAK_SECONDS" "$(( LONG_BREAK_SECONDS / 60 ))"
+    if [[ ! -f $CONFIG_FILE ]]; then
+        printf 'To change durations permanently, create the file with lines like:\n'
+        printf '  FOCUS_SECONDS=1800        # 30 min\n'
+    fi
+}
+
 # ============================ SETUP TERMINAL ===============================
 
 update_term_size() {
@@ -312,6 +369,8 @@ cleanup() {
         if [[ -n $SAVED_STTY ]]; then
             stty "$SAVED_STTY" 2>/dev/null || true
         fi
+        # Instance ini menjalankan timer: bersihkan juga file statusnya.
+        clear_state
     fi
 }
 
@@ -338,6 +397,78 @@ log_session() {
     fi
     mkdir -p "$DATA_DIR"
     printf '%s|%s|%s\n' "$(date +%F)" "$type" "$secs" >> "$HISTORY_FILE"
+}
+
+# ============================== STATUS SESI =================================
+# Timer yang berjalan menulis state kecil agar "pomo status" (proses lain)
+# bisa menampilkan sisa waktu. Format: mode|pid|end_epoch|total|paused|frozen.
+# Best-effort: kegagalan menulis status tidak boleh mengganggu timer.
+
+write_state() {
+    # $1 end epoch, $2 total detik, $3 paused (0/1), $4 sisa detik saat pause
+    local dir
+    dir=${STATE_FILE%/*}
+    [[ -d $dir ]] || mkdir -p "$dir" 2>/dev/null || return 0
+    printf '%s|%s|%s|%s|%s|%s\n' \
+        "${CURRENT_MODE:-focus}" "$$" "$1" "$2" "$3" "$4" > "$STATE_FILE" 2>/dev/null || true
+}
+
+clear_state() {
+    # Hapus file status bila masih milik proses ini (PID di file sama),
+    # agar instance pomo lain yang kebetulan jalan tidak ikut terhapus.
+    # Selalu return 0: dipanggil dari trap EXIT, dan return value trap
+    # menimpa exit code pomo.
+    local owner
+    [[ -f $STATE_FILE ]] || return 0
+    IFS= read -r owner < "$STATE_FILE" || return 0
+    owner=${owner#*|}
+    owner=${owner%%|}
+    if [[ $owner == "$$" ]]; then
+        rm -f "$STATE_FILE"
+    fi
+    return 0
+}
+
+show_status() {
+    # Satu baris untuk statusbar: "focus 12:34", "long break 03:21 (paused)",
+    # atau "idle". Exit 0 jika ada sesi berjalan, 1 jika tidak —
+    # memudahkan skrip statusbar bereaksi.
+    local mode pid end total paused frozen remaining label
+    if [[ ! -f $STATE_FILE ]]; then
+        printf 'idle\n'
+        return 1
+    fi
+    IFS='|' read -r mode pid end total paused frozen < "$STATE_FILE" || { printf 'idle\n'; return 1; }
+    if [[ ! $mode =~ ^(focus|short_break|long_break)$ ]] \
+        || [[ ! $end =~ ^[0-9]+$ ]] || [[ ! $total =~ ^[0-9]+$ ]] \
+        || [[ ! $pid =~ ^[0-9]+$ ]]; then
+        printf 'idle\n'
+        return 1
+    fi
+    # Penulis state sudah mati (crash/kill): status basi, buang.
+    if (( pid != $$ )) && ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$STATE_FILE"
+        printf 'idle\n'
+        return 1
+    fi
+    if [[ $paused == 1 ]]; then
+        remaining=${frozen:-0}
+        [[ $remaining =~ ^[0-9]+$ ]] || remaining=0
+    else
+        remaining=$(( end - $(now) ))
+        (( remaining < 0 )) && remaining=0
+    fi
+    case $mode in
+        focus)        label=focus ;;
+        short_break)  label='short break' ;;
+        long_break)   label='long break' ;;
+    esac
+    printf '%s %02d:%02d' "$label" "$(( remaining / 60 ))" "$(( remaining % 60 ))"
+    if [[ $paused == 1 ]]; then
+        printf ' (paused)'
+    fi
+    printf '\n'
+    return 0
 }
 
 # =============================== GAMBAR UI ==================================
@@ -688,6 +819,7 @@ run_timer() {
 
     end=$(( $(now) + total ))
     frozen=$total
+    write_state "$end" "$total" 0 "$total"
 
     # Animasi intro: digit besar menyala piksel demi piksel (~0.35s),
     # hanya di terminal interaktif yang cukup besar.
@@ -718,6 +850,8 @@ run_timer() {
         local frame_key="$remaining-$paused-${TERM_COLS}x${TERM_LINES}"
         if [[ $frame_key != "$last_frame" || $RESIZED == 1 ]]; then
             draw_ui "$remaining" "$total" "$label" "$paused"
+            # Status untuk "pomo status" ikut detik/pause yang tampil
+            write_state "$end" "$total" "$paused" "$remaining"
             last_frame=$frame_key
             RESIZED=0
         fi
@@ -840,6 +974,7 @@ run_cycle() {
 
         rc=0
         run_timer "$duration" "$label" || rc=$?
+        clear_state
         case $rc in
             1)
                 return 0    # quit
@@ -1012,8 +1147,10 @@ Usage:
   pomo -w             Start a short break (5 minutes)
   pomo -W             Start a long break (15 minutes)
   pomo stats          Show session statistics
+  pomo status         One-line status for status bars (tmux/waybar)
   pomo theme [name]   Show the current theme, or set the theme
   pomo themes         Same as "pomo theme"
+  pomo config         Show config file location and effective durations
   pomo update         Update to the latest version from GitHub
   pomo --help         Show this help
   pomo --version      Show version
@@ -1035,8 +1172,20 @@ Data:
   Completed sessions are logged to
   ~/.local/share/pomo/history.log  (format: date|type|seconds)
 
+Status bar:
+  "pomo status" prints one line, e.g. "focus 12:34" or "short break 03:21
+  (paused)", or "idle" when no timer is running.
+  Exit code: 0 while a session is active, 1 otherwise.
+  Examples: tmux  #(pomo status)   ·   waybar  {"exec": "pomo status"}
+
 Configuration:
-  Edit the constants at the top of the script, or set:
+  Optional config file: ~/.config/pomo/pomo.conf (XDG_CONFIG_HOME respected).
+  Format: KEY=value, one per line, '#' starts a comment. Keys:
+    FOCUS_SECONDS          default 1500  (25 min)
+    SHORT_BREAK_SECONDS    default 300   (5 min)
+    LONG_BREAK_SECONDS     default 900   (15 min)
+  Precedence: environment variable > pomo.conf > default.
+  Per-run environment overrides:
     POMO_FOCUS_SECONDS          default 1500  (25 min)
     POMO_SHORT_BREAK_SECONDS    default 300   (5 min)
     POMO_LONG_BREAK_SECONDS     default 900   (15 min)
@@ -1119,6 +1268,7 @@ self_update() {
 
 main() {
     load_theme
+    load_config
     local cmd=${1:-}
     case $cmd in
         ''|start)
@@ -1132,6 +1282,12 @@ main() {
             ;;
         stats)
             show_stats
+            ;;
+        status)
+            show_status
+            ;;
+        config)
+            show_config
             ;;
         update)
             self_update "$(resolve_self)"
