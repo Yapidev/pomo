@@ -223,6 +223,10 @@ out=$(bash "$POMO" status 2>&1); rc=$?
 assert_contains 'status tanpa sesi: mencetak idle' "$out" 'idle'
 assert_eq 'status tanpa sesi: exit code 1' "$rc" '1'
 
+out=$(bash "$POMO" status --json 2>&1); rc=$?
+assert_contains 'status --json tanpa sesi: class idle' "$out" '"class":["idle"]'
+assert_eq 'status --json tanpa sesi: exit code 1' "$rc" '1'
+
 # ------------------------------------------- status: sesi end-to-end (timer asli)
 export XDG_DATA_HOME="$TMP/data-status"
 mkdir -p "$XDG_RUNTIME_DIR"
@@ -233,6 +237,11 @@ sleep 2
 out=$(bash "$POMO" status 2>&1); rc=$?
 assert_eq 'status saat sesi jalan: exit code 0' "$rc" '0'
 assert_contains 'status saat sesi jalan: mode + sisa waktu' "$out" 'focus 00:0'
+out=$(bash "$POMO" status --json 2>&1); rc=$?
+assert_eq 'status --json saat sesi jalan: exit code 0' "$rc" '0'
+assert_contains 'status --json: class berisi mode' "$out" '"class":["focus"]'
+assert_contains 'status --json: field text' "$out" '"text":"focus 00:0'
+assert_contains 'status --json: paused false' "$out" '"paused":false'
 wait "$pomo_pid"
 out=$(bash "$POMO" status 2>&1); rc=$?
 assert_contains 'status setelah sesi selesai: idle' "$out" 'idle'
@@ -331,6 +340,12 @@ unit_rc=0
     write_state "$(( $(now) + 120 ))" 300 1 75
     out=$(show_status)
     [[ $out == 'short break 01:15 (paused)' ]]
+    out=$(show_status --json)
+    # text tanpa akhiran "(paused)": status pause sudah ada di class/paused
+    [[ $out == *'"text":"short break 01:15"'* ]]
+    [[ $out == *'"class":["short_break","paused"]'* ]]
+    [[ $out == *'"paused":true'* ]]
+    [[ $out == *'SHORT BREAK'* ]]
 
     # shellcheck disable=SC2034   # dipakai oleh write_state dari skrip pomo
     CURRENT_MODE=long_break
