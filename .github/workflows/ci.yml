@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 jobs:
@@ -12,8 +13,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
       - name: Syntax check
         run: bash -n pomo
 
+      - name: ShellCheck
+        run: shellcheck -S warning pomo tests/run_tests.sh build-deb.sh
+
       - name: Test suite
         run: tests/run_tests.sh
+
+  release:
+    # Tag v*: build .deb, upload as artifact, and attach it to the release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build .deb
+        run: ./build-deb.sh
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pomo-deb
+          path: build/pomo_*_all.deb
+
+      - name: Attach .deb to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/pomo_*_all.deb
