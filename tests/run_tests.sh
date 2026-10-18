@@ -6,6 +6,7 @@
 #
 # Jalankan dari mana saja: tests/run_tests.sh
 
+# shellcheck source=/dev/null
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -145,6 +146,7 @@ unit_rc=0
     export XDG_DATA_HOME="$TMP/data-theme"
     source "$POMO"
 
+    # shellcheck disable=SC2034   # dipakai oleh fungsi pomo yang di-source
     COLOR_ENABLED=1
     apply_theme dracula
     [[ $THEME_NAME == dracula ]]
@@ -330,6 +332,7 @@ unit_rc=0
     out=$(show_status)
     [[ $out == 'short break 01:15 (paused)' ]]
 
+    # shellcheck disable=SC2034   # dipakai oleh write_state dari skrip pomo
     CURRENT_MODE=long_break
     write_state "$(( $(now) - 10 ))" 900 0 0
     out=$(show_status)

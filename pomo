@@ -231,11 +231,11 @@ font_init() {
         [9]=$'█████\n█   █\n█████\n    █\n█████'
         [:]=$'     \n  █  \n     \n  █  \n     '
     )
-    local k rows r
+    local k grow r
     for k in "${!glyph[@]}"; do
-        mapfile -t rows <<< "${glyph[$k]}"
+        mapfile -t grow <<< "${glyph[$k]}"
         for (( r = 0; r < 5; r++ )); do
-            FONTROWS["${k}_${r}"]=${rows[$r]}
+            FONTROWS["${k}_${r}"]=${grow[$r]}
         done
     done
 }
