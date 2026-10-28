@@ -55,6 +55,12 @@ LONG_BREAK_SECONDS="${POMO_LONG_BREAK_SECONDS:-900}"     # 15 menit
 # Diisi lewat env POMO_NOTIFY_CMD atau key NOTIFY_CMD di pomo.conf.
 NOTIFY_CMD="${POMO_NOTIFY_CMD:-}"
 
+# Audio output. Focus and break use separate sounds; both break lengths share BREAK_SOUND.
+SPEAKER_CMD="${POMO_SPEAKER_CMD:-}"
+SPEAKER_SOUND="${POMO_SPEAKER_SOUND:-/usr/share/sounds/freedesktop/stereo/complete.oga}"
+FOCUS_SOUND="${POMO_FOCUS_SOUND:-}"
+BREAK_SOUND="${POMO_BREAK_SOUND:-/usr/share/sounds/freedesktop/stereo/bell.oga}"
+
 # Jumlah sesi fokus sebelum berhak dapat break panjang
 readonly CYCLES_BEFORE_LONG=4
 
@@ -330,6 +336,30 @@ load_config() {
                 value=${value%"${value##*[![:space:]]}"}
                 [[ -z ${POMO_NOTIFY_CMD:-} ]] && NOTIFY_CMD=$value
                 ;;
+            SPEAKER_CMD)
+                value=$raw
+                value=${value#"${value%%[![:space:]]*}"}
+                value=${value%"${value##*[![:space:]]}"}
+                [[ -z ${POMO_SPEAKER_CMD:-} ]] && SPEAKER_CMD=$value
+                ;;
+            SPEAKER_SOUND)
+                value=$raw
+                value=${value#"${value%%[![:space:]]*}"}
+                value=${value%"${value##*[![:space:]]}"}
+                [[ -z ${POMO_SPEAKER_SOUND:-} ]] && SPEAKER_SOUND=$value
+                ;;
+            FOCUS_SOUND)
+                value=$raw
+                value=${value#"${value%%[![:space:]]*}"}
+                value=${value%"${value##*[![:space:]]}"}
+                [[ -z ${POMO_FOCUS_SOUND:-} ]] && FOCUS_SOUND=$value
+                ;;
+            BREAK_SOUND)
+                value=$raw
+                value=${value#"${value%%[![:space:]]*}"}
+                value=${value%"${value##*[![:space:]]}"}
+                [[ -z ${POMO_BREAK_SOUND:-} ]] && BREAK_SOUND=$value
+                ;;
         esac
     done < "$CONFIG_FILE"
     return 0
@@ -415,6 +445,35 @@ notify() {
 
 ring_bell() {
     printf '\a'
+}
+
+play_speaker() {
+    local sound_file="${1:-$SPEAKER_SOUND}"
+    local fallback="${SPEAKER_SOUND:-/usr/share/sounds/freedesktop/stereo/complete.oga}"
+
+    if [[ -n ${SPEAKER_CMD:-} ]]; then
+        bash -c "$SPEAKER_CMD" pomo "$sound_file" || true
+        return 0
+    fi
+
+    if command -v paplay >/dev/null 2>&1; then
+        if [[ -n $sound_file && -f $sound_file ]] && paplay "$sound_file" >/dev/null 2>&1; then
+            return 0
+        fi
+        if [[ -n $fallback && -f $fallback && $sound_file != "$fallback" ]] && paplay "$fallback" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    if command -v aplay >/dev/null 2>&1 && [[ -n $sound_file && -f $sound_file ]]; then
+        aplay -q "$sound_file" >/dev/null 2>&1 && return 0
+    fi
+
+    if command -v beep >/dev/null 2>&1; then
+        beep >/dev/null 2>&1 && return 0
+    fi
+    ring_bell
+    return 0
 }
 
 # ============================== PENYIMPANAN ================================
@@ -1128,15 +1187,18 @@ run_cycle() {
                 focus)
                     notify 'Focus session complete' \
                         "Nice work — $(( duration / 60 )) minutes of focus logged."
+                    play_speaker "$FOCUS_SOUND"
                     log_session focus "$duration"
                     focus_done=$(( focus_done + 1 ))
                     ;;
                 short_break)
                     notify 'Short break over' 'Ready for another focus session?'
+                    play_speaker "$BREAK_SOUND"
                     log_session short_break "$duration"
                     ;;
                 long_break)
                     notify 'Long break over' 'Refreshed — time to get back to work.'
+                    play_speaker "$BREAK_SOUND"
                     log_session long_break "$duration"
                     ;;
             esac
@@ -1417,7 +1479,26 @@ main() {
     load_config
     local cmd=${1:-}
     case $cmd in
-        ''|start)
+        '')
+            validate_durations
+            local answer
+            printf "\nMulai sesi fokus sekarang? [y/N]: "
+            if [[ -t 0 ]]; then
+                IFS= read -r answer || answer=""
+            else
+                answer=""
+            fi
+
+            case "${answer,,}" in
+                y|yes)
+                    start_session focus
+                    ;;
+                *)
+                    printf "Sesi fokus belum dimulai.\n"
+                    ;;
+            esac
+            ;;
+        start)
             start_session focus
             ;;
         -w|--short)
