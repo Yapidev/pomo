@@ -1524,8 +1524,8 @@ show_help() {
 pomo — an eye-catching pomodoro timer for your terminal
 
 Usage:
-  pomo                Start a focus session (25 minutes by default)
-  pomo start          Same as above
+  pomo                Confirm, then start a focus session (25 min)
+  pomo start          Start a focus session immediately (25 min)
   pomo -w             Start a short break (5 minutes)
   pomo -W             Start a long break (15 minutes)
   pomo resume         Resume the last interrupted session
