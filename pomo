@@ -933,59 +933,63 @@ show_stats_overlay() {
 
 show_duration_config_overlay() {
     # Overlay untuk mengustom durasi sesi
-    local fm=$(( FOCUS_SECONDS / 60 ))
-    local sm=$(( SHORT_BREAK_SECONDS / 60 ))
-    local lm=$(( LONG_BREAK_SECONDS / 60 ))
-    
-    OVERLAY_LINES=(
-        "Current durations:"
-        "  Focus session      : $fm min"
-        "  Short break        : $sm min"
-        "  Long break         : $lm min"
-        ''
-        'Edit durations:'
-        '[f] Change focus duration'
-        '[s] Change short break duration'
-        '[l] Change long break duration'
-        '[r] Reset to defaults (25/5/15 min)'
-        '[a] Save to config file'
-    )
-    draw_overlay 'CUSTOMIZE DURATIONS' 'Press [b] to go back'
-    
-    local key=''
-    IFS= read -r -s -n 1 key || true
-    
-    case $key in
-        f|F)
-           fm=$(prompt_for_duration "Focus session" "$fm")
-            FOCUS_SECONDS=$(( fm * 60 ))
-            ;;
-        s|S)
-            sm=$(prompt_for_duration "Short break" "$sm")
-            SHORT_BREAK_SECONDS=$(( sm * 60 ))
-            ;;
-        l|L)
-            lm=$(prompt_for_duration "Long break" "$lm")
-            LONG_BREAK_SECONDS=$(( lm * 60 ))
-            ;;
-        r|R)
-            FOCUS_SECONDS=1500
-            SHORT_BREAK_SECONDS=300
-            LONG_BREAK_SECONDS=900
-            ;;
-        a|A)
-            save_duration_config
-            ;;
-        b|B)
+    while :; do
+        local fm=$(( FOCUS_SECONDS / 60 ))
+        local sm=$(( SHORT_BREAK_SECONDS / 60 ))
+        local lm=$(( LONG_BREAK_SECONDS / 60 ))
+        
+        OVERLAY_LINES=(
+            "Current durations:"
+            "  Focus session      : $fm min"
+            "  Short break        : $sm min"
+            "  Long break         : $lm min"
+            ''
+            'Edit durations:'
+            '[f] Change focus duration'
+            '[s] Change short break duration'
+            '[l] Change long break duration'
+            '[r] Reset to defaults (25/5/15 min)'
+            '[a] Save to config file'
+        )
+        draw_overlay 'CUSTOMIZE DURATIONS' 'Press [b] to go back'
+        
+        local key=''
+        if ! IFS= read -r -s -n 1 key; then
             return
-            ;;
-    esac
+        fi
+        
+        case $key in
+            f|F)
+                fm=$(prompt_for_duration "Focus session" "$fm")
+                FOCUS_SECONDS=$(( fm * 60 ))
+                ;;
+            s|S)
+                sm=$(prompt_for_duration "Short break" "$sm")
+                SHORT_BREAK_SECONDS=$(( sm * 60 ))
+                ;;
+            l|L)
+                lm=$(prompt_for_duration "Long break" "$lm")
+                LONG_BREAK_SECONDS=$(( lm * 60 ))
+                ;;
+            r|R)
+                FOCUS_SECONDS=1500
+                SHORT_BREAK_SECONDS=300
+                LONG_BREAK_SECONDS=900
+                ;;
+            a|A)
+                save_duration_config
+                ;;
+            b|B)
+                return
+                ;;
+        esac
+    done
 }
 
 prompt_for_duration() {
     # $1 = label, $2 = current value in minutes
     local label=$1 current=$2
-    local input='' val
+    local input=''
     
     while :; do
         OVERLAY_LINES=(
@@ -993,12 +997,19 @@ prompt_for_duration() {
             "Current: $current min"
             ''
             "Enter new duration (1-120):"
+            ''
+            "[Enter to accept, Esc to cancel]"
         )
         draw_overlay "$label" ''
         
         input=''
         printf '%s' "${E}[H"
-        if ! IFS= read -r -s input; then
+        if ! IFS= read -r -s -n 100 input; then
+            return "$current"
+        fi
+        
+        # Handle Esc key (exit code 1 from read when Esc pressed in raw mode)
+        if [[ $? -ne 0 ]] || [[ $input == $'\x1b' ]]; then
             return "$current"
         fi
         
@@ -1013,6 +1024,8 @@ prompt_for_duration() {
             OVERLAY_LINES=(
                 "Invalid input!"
                 "Please enter a number between 1 and 120"
+                ''
+                "Your input: $input"
             )
             draw_overlay 'ERROR' 'Press any key to continue'
             local k=''
