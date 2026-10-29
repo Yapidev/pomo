@@ -164,18 +164,43 @@ their full duration, even when finished across multiple sittings.
 A session that already ran out of time while pomo was closed is
 discarded: `pomo resume` says so and logs nothing.
 
-## Notifications
+## Audio
 
-By default pomo rings the terminal bell and sends a desktop
-notification with `notify-send`. Want a sound, a webhook, or something
-else instead? Set a hook (in `pomo.conf` or via `POMO_NOTIFY_CMD`):
+Pomo plays a sound when a session completes. By default, focus uses
+`/usr/share/sounds/freedesktop/stereo/complete.oga`; both short and long
+breaks use `/usr/share/sounds/freedesktop/stereo/bell.oga`.
+
+Set paths permanently in `~/.config/pomo/pomo.conf`:
 
 ```console
-NOTIFY_CMD=paplay /usr/share/sounds/freedesktop/stereo/complete.oga
-NOTIFY_CMD=notify-send -u normal pomo "$1" && paplay bell.ogg
+SPEAKER_SOUND=/path/to/default.oga
+FOCUS_SOUND=/path/to/focus.oga
+BREAK_SOUND=/path/to/break.oga
 ```
 
-The hook receives the title and the message as `$1` and `$2`.
+`FOCUS_SOUND` may be left unset to use `SPEAKER_SOUND`. For one run, use
+`POMO_SPEAKER_SOUND`, `POMO_FOCUS_SOUND`, and `POMO_BREAK_SOUND`.
+Pomo tries `paplay`, then `aplay`, then `beep`; if none can play the
+sound, it falls back to the terminal bell. To supply a custom playback
+command, set `SPEAKER_CMD` in `pomo.conf` or `POMO_SPEAKER_CMD` in the
+environment. The command receives the selected sound path as `$1`:
+
+```console
+POMO_SPEAKER_CMD='paplay "$1"' pomo
+```
+
+## Notifications
+
+By default, pomo sends a desktop notification with `notify-send`. To
+replace that notification with your own command (for example, a webhook),
+set `NOTIFY_CMD` in `pomo.conf` or `POMO_NOTIFY_CMD` in the environment:
+
+```console
+NOTIFY_CMD=notify-send -u normal -a pomo "$1" "$2"
+```
+
+The hook receives the title and message as `$1` and `$2`. `NOTIFY_CMD`
+replaces the desktop notification only; it is independent of session audio.
 
 The timer animates like a pixel display: digits light up pixel by pixel
 at session start and the colon blinks every second —

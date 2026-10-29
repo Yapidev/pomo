@@ -18,11 +18,15 @@ deb_version="${version}-1"
 
 arch="all"
 
-stage="build/pomo"
+stage=$(mktemp -d "${TMPDIR:-/tmp}/pomo-stage.XXXXXX")
+trap 'rm -rf "$stage"' EXIT
+
 out="build/pomo_${deb_version}_${arch}.deb"
 
 rm -rf build
-mkdir -p "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/share/doc/pomo"
+mkdir -p "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/share/doc/pomo" build
+chmod 755 "$stage/DEBIAN"
+
 
 # 1) Script utama ke /usr/bin/pomo
 install -m 755 pomo "$stage/usr/bin/pomo"

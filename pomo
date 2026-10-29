@@ -1571,11 +1571,13 @@ Interrupted sessions:
   A session that already ran out of time while pomo was closed is
   discarded — nothing is logged for it.
 
-Notifications:
-  By default pomo rings the terminal bell and calls notify-send.
-  Set NOTIFY_CMD to run your own command instead; it receives the title
-  and the message as "$1" and "$2", e.g. a sound or a webhook.
-
+Notifications and audio:
+  Desktop notifications use notify-send by default; NOTIFY_CMD replaces
+  that notification hook and receives title and message as "$1" and "$2".
+  Focus audio uses FOCUS_SOUND (or SPEAKER_SOUND if FOCUS_SOUND is empty).
+  Both break lengths use BREAK_SOUND. Defaults: complete.oga for focus and
+  bell.oga for breaks. Playback tries paplay, aplay, then beep, with a
+  terminal bell as the final fallback.
 Configuration:
   Optional config file: ~/.config/pomo/pomo.conf (XDG_CONFIG_HOME respected).
   Format: KEY=value, one per line, '#' starts a comment. Keys:
@@ -1583,6 +1585,10 @@ Configuration:
     SHORT_BREAK_SECONDS    default 300   (5 min)
     LONG_BREAK_SECONDS     default 900   (15 min)
     NOTIFY_CMD             notification hook, replaces notify-send
+    SPEAKER_CMD            custom audio command; sound path is "$1"
+    SPEAKER_SOUND          default/fallback audio path (complete.oga)
+    FOCUS_SOUND            focus completion audio (defaults to SPEAKER_SOUND)
+    BREAK_SOUND            audio shared by both breaks (bell.oga)
   Precedence: environment variable > pomo.conf > default.
   Per-run environment overrides:
     POMO_FOCUS_SECONDS          default 1500  (25 min)
@@ -1591,6 +1597,10 @@ Configuration:
     POMO_THEME                  color theme, e.g. nord
     POMO_ANIMATION              set to "off" to disable the pixel animations
     POMO_NOTIFY_CMD             notification hook, same as NOTIFY_CMD
+    POMO_SPEAKER_CMD            custom audio command
+    POMO_SPEAKER_SOUND          default/fallback audio path
+    POMO_FOCUS_SOUND            focus completion audio
+    POMO_BREAK_SOUND            audio shared by both breaks
 
 Themes:
   Available themes: default, dracula, gruvbox, nord, solarized, matrix, mono

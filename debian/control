@@ -7,6 +7,7 @@ Build-Depends: debhelper-compat (= 13)
 Homepage: https://github.com/Yapidev/pomo
 
 Package: pomo
+Maintainer: Yapidev <yapidev@users.noreply.github.com>
 Architecture: all
 Depends: bash (>= 4.0), libnotify-bin, ncurses-bin
 Description: Eye-catching pomodoro timer TUI in pure Bash
