@@ -1,4 +1,4 @@
-pomo (1.5.0-1) unstable; urgency=medium
+pomo (1.6.0-1) unstable; urgency=medium
 
   * Session-specific sounds: separate sounds for focus and break end
     (FOCUS_SOUND/BREAK_SOUND in pomo.conf, played via paplay/aplay with

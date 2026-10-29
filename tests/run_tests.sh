@@ -59,7 +59,7 @@ chmod +x "$TMP/fakebin/notify-send"
 # --------------------------------------------------------------- version
 out=$(bash "$POMO" --version 2>&1)
 assert_contains '--version mencetak nama dan versi' "$out" 'pomo '
-assert_contains '--version cocok dengan changelog 1.5.0' "$out" 'pomo 1.5.0'
+assert_contains '--version cocok dengan changelog 1.6.0' "$out" 'pomo 1.6.0'
 
 # ------------------------------------------------------------------ help
 out=$(bash "$POMO" --help 2>&1)
