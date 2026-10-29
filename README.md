@@ -6,7 +6,8 @@ to install.
 ![pomo focus session](assets/screenshot_new.png)
 
 Big block-digit countdown, progress bar, colors, desktop notifications
-and a session log. Press `pomo` and start focusing.
+and a session log. Run `pomo` to confirm before starting a focus
+session, or use `pomo start` to start immediately.
 
 ## Install
 
@@ -72,18 +73,19 @@ Only **completed** sessions are logged — skipping or switching writes nothing.
 
 ## Commands
 
-| Command         | What it does                       |
-|-----------------|------------------------------------|
-| `pomo`          | Start a focus session (25 min)     |
-| `pomo -w`       | Short break (5 min)                 |
-| `pomo -W`       | Long break (15 min)                |
-| `pomo resume`   | Resume an interrupted session       |
-| `pomo stats`    | Today's summary + 7-day chart      |
-| `pomo status`   | One-line status for status bars    |
-| `pomo config`   | Show config file + durations       |
-| `pomo theme`    | Show / pick a color theme          |
-| `pomo update`   | Self-update from GitHub            |
-| `pomo --help`   | Everything above, in the terminal |
+| Command         | What it does                                     |
+|-----------------|--------------------------------------------------|
+| `pomo`          | Confirm, then start a focus session (25 min)     |
+| `pomo start`    | Start focus immediately (25 min)                 |
+| `pomo -w`       | Short break (5 min)                              |
+| `pomo -W`       | Long break (15 min)                              |
+| `pomo resume`   | Resume an interrupted session                    |
+| `pomo stats`    | Today's summary + 7-day chart                    |
+| `pomo status`   | One-line status for status bars                  |
+| `pomo config`   | Show config file + durations                     |
+| `pomo theme`    | Show / pick a color theme                        |
+| `pomo update`   | Self-update from GitHub                          |
+| `pomo --help`   | Everything above, in the terminal                |
 
 The cycle is automatic: every 4th completed focus session is followed by
 a long break, the others by a short break. You confirm before each next
@@ -191,20 +193,33 @@ POMO_SPEAKER_CMD='paplay "$1"' pomo
 
 ## Notifications
 
-By default, pomo sends a desktop notification with `notify-send`. To
-replace that notification with your own command (for example, a webhook),
-set `NOTIFY_CMD` in `pomo.conf` or `POMO_NOTIFY_CMD` in the environment:
+When a session completes, pomo sends a desktop notification using
+`notify-send`, if it is installed. By default, the notification uses
+critical urgency.
+
+To customize the notification command permanently, add `NOTIFY_CMD`
+to `~/.config/pomo/pomo.conf`. For example, to use normal urgency:
 
 ```console
 NOTIFY_CMD=notify-send -u normal -a pomo "$1" "$2"
 ```
 
-The hook receives the title and message as `$1` and `$2`. `NOTIFY_CMD`
-replaces the desktop notification only; it is independent of session audio.
+To override the command for a single run, use `POMO_NOTIFY_CMD`:
 
-The timer animates like a pixel display: digits light up pixel by pixel
-at session start and the colon blinks every second —
-`POMO_ANIMATION=off` turns all of it off.
+```console
+POMO_NOTIFY_CMD='notify-send -u normal -a pomo "$1" "$2"' pomo
+```
+
+The custom command receives the notification title as `$1` and the
+message as `$2`. Setting `NOTIFY_CMD` or `POMO_NOTIFY_CMD` replaces
+the default desktop notification command. Session audio and the
+terminal bell are handled separately.
+
+## Animation
+
+The timer uses a pixel-style animation: digits light up pixel by pixel
+at session start, and the colon blinks every second. Set
+`POMO_ANIMATION=off` to disable the animations.
 
 ## Where is my data?
 
