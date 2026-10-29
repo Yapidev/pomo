@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ================================ KONSTANTA =================================
 
-readonly POMO_VERSION="1.5.0"
+readonly POMO_VERSION="1.6.0"
 
 # URL script mentah di GitHub; dipakai oleh subcommand "update"
 readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
@@ -931,6 +931,117 @@ show_stats_overlay() {
     IFS= read -r -s -n 1 k || true
 }
 
+show_duration_config_overlay() {
+    # Overlay untuk mengustom durasi sesi
+    local fm=$(( FOCUS_SECONDS / 60 ))
+    local sm=$(( SHORT_BREAK_SECONDS / 60 ))
+    local lm=$(( LONG_BREAK_SECONDS / 60 ))
+    
+    OVERLAY_LINES=(
+        "Current durations:"
+        "  Focus session      : $fm min"
+        "  Short break        : $sm min"
+        "  Long break         : $lm min"
+        ''
+        'Edit durations:'
+        '[f] Change focus duration'
+        '[s] Change short break duration'
+        '[l] Change long break duration'
+        '[r] Reset to defaults (25/5/15 min)'
+        '[a] Save to config file'
+    )
+    draw_overlay 'CUSTOMIZE DURATIONS' 'Press [b] to go back'
+    
+    local key=''
+    IFS= read -r -s -n 1 key || true
+    
+    case $key in
+        f|F)
+           fm=$(prompt_for_duration "Focus session" "$fm")
+            FOCUS_SECONDS=$(( fm * 60 ))
+            ;;
+        s|S)
+            sm=$(prompt_for_duration "Short break" "$sm")
+            SHORT_BREAK_SECONDS=$(( sm * 60 ))
+            ;;
+        l|L)
+            lm=$(prompt_for_duration "Long break" "$lm")
+            LONG_BREAK_SECONDS=$(( lm * 60 ))
+            ;;
+        r|R)
+            FOCUS_SECONDS=1500
+            SHORT_BREAK_SECONDS=300
+            LONG_BREAK_SECONDS=900
+            ;;
+        a|A)
+            save_duration_config
+            ;;
+        b|B)
+            return
+            ;;
+    esac
+}
+
+prompt_for_duration() {
+    # $1 = label, $2 = current value in minutes
+    local label=$1 current=$2
+    local input='' val
+    
+    while :; do
+        OVERLAY_LINES=(
+            "Set $label duration (minutes):"
+            "Current: $current min"
+            ''
+            "Enter new duration (1-120):"
+        )
+        draw_overlay "$label" ''
+        
+        input=''
+        printf '%s' "${E}[H"
+        if ! IFS= read -r -s input; then
+            return "$current"
+        fi
+        
+        if [[ -z $input ]]; then
+            return "$current"
+        fi
+        
+        if [[ $input =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 120 )); then
+            return "$input"
+        else
+            # Show error
+            OVERLAY_LINES=(
+                "Invalid input!"
+                "Please enter a number between 1 and 120"
+            )
+            draw_overlay 'ERROR' 'Press any key to continue'
+            local k=''
+            IFS= read -r -s -n 1 k || true
+        fi
+    done
+}
+
+save_duration_config() {
+    mkdir -p "$CONFIG_DIR"
+    cat > "$CONFIG_FILE" <<EOF
+# Pomodoro timer configuration
+# Custom durations set via UI
+FOCUS_SECONDS=$FOCUS_SECONDS
+SHORT_BREAK_SECONDS=$SHORT_BREAK_SECONDS
+LONG_BREAK_SECONDS=$LONG_BREAK_SECONDS
+EOF
+    
+    OVERLAY_LINES=(
+        "Configuration saved!"
+        "File: $CONFIG_FILE"
+        ''
+        "New durations will be used for future sessions."
+    )
+    draw_overlay 'SAVED' 'Press any key to continue'
+    local k=''
+    IFS= read -r -s -n 1 k || true
+}
+
 open_menu() {
     # Menu sesi. Hasil dikeluarkan lewat MENU_RESULT:
     # back | focus | short_break | long_break | quit
@@ -948,6 +1059,7 @@ open_menu() {
             ''
             '[h] Help'
             '[t] Stats'
+            '[d] Customize durations'
             "[c] Cycle theme (now: $THEME_NAME)"
             ''
             '[b] Back to timer'
@@ -966,6 +1078,7 @@ open_menu() {
             3)     MENU_RESULT='long_break' ;;
             h|H|'?') show_help_overlay ;;
             t|T)   show_stats_overlay ;;
+            d|D)   show_duration_config_overlay ;;
             c|C)   cycle_theme
                    # Terapkan ulang warna mode agar menu (dan timer
                    # setelahnya) langsung memakai tema yang baru.
@@ -1236,6 +1349,35 @@ start_session() {
     # $1 mode awal
     validate_durations
     init_terminal
+    
+    # Show confirmation in UI for focus mode
+    if [[ "$1" == "focus" ]]; then
+        local label=$(mode_label "$1")
+        local duration=$(mode_duration "$1")
+        local mins=$(( duration / 60 ))
+        
+        draw_message "START CONFIRMATION" "Start $label ($mins min)?" "Press [Enter] to start  ·  [q] to quit"
+        
+        local ans=''
+        while :; do
+            ans=''
+            if ! IFS= read -r -s -n 1 ans; then
+                cleanup
+                exit 0
+            fi
+            case $ans in
+                '') 
+                    break  # Enter ditekan - lanjutkan
+                    ;;
+                q|Q)
+                    cleanup
+                    printf "Sesi fokus belum dimulai.\n"
+                    exit 0
+                    ;;
+            esac
+        done
+    fi
+    
     run_cycle "$1"
 }
 
@@ -1480,23 +1622,7 @@ main() {
     local cmd=${1:-}
     case $cmd in
         '')
-            validate_durations
-            local answer
-            printf "\nMulai sesi fokus sekarang? [y/N]: "
-            if [[ -t 0 ]]; then
-                IFS= read -r answer || answer=""
-            else
-                answer=""
-            fi
-
-            case "${answer,,}" in
-                y|yes)
-                    start_session focus
-                    ;;
-                *)
-                    printf "Sesi fokus belum dimulai.\n"
-                    ;;
-            esac
+            start_session focus
             ;;
         start)
             start_session focus
