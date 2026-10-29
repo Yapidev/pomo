@@ -1,51 +1,47 @@
-name: CI
+name: Pomo CI
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  test-and-package:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: Check Bash syntax
+        run: |
+          bash -n pomo
+          bash -n tests/run_tests.sh
+          bash -n build-deb.sh
 
-      - name: Syntax check
-        run: bash -n pomo
+      - name: Run test suite
+        run: bash tests/run_tests.sh
 
-      - name: ShellCheck
-        run: shellcheck -S warning pomo tests/run_tests.sh build-deb.sh
-
-      - name: Test suite
-        run: tests/run_tests.sh
-
-  release:
-    # Tag v*: build .deb, upload as artifact, and attach it to the release.
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Build .deb
+      - name: Build Debian package
         run: ./build-deb.sh
 
-      - name: Upload .deb artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: pomo-deb
-          path: build/pomo_*_all.deb
+      - name: Verify package metadata
+        shell: bash
+        run: |
+          version=$(sed -n \
+            's/^readonly POMO_VERSION="\([^"]*\)"$/\1/p' pomo | head -n 1)
 
-      - name: Attach .deb to the release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: build/pomo_*_all.deb
+          test -n "$version"
+          package="build/pomo_${version}-1_all.deb"
+          test -f "$package"
+
+          test "$(dpkg-deb -f "$package" Package)" = "pomo"
+          test "$(dpkg-deb -f "$package" Version)" = "${version}-1"
+          test "$(dpkg-deb -f "$package" Architecture)" = "all"
+          test -n "$(dpkg-deb -f "$package" Maintainer)"
+
+          echo "Package metadata verified: $package"

@@ -194,7 +194,7 @@ assert_eq 'apply_theme + cycle_theme + set_mode_colors: benar' "$unit_rc" '0'
 
 
 # --------------------------------------------------- validasi durasi < 0
-out=$(POMO_FOCUS_SECONDS=0 bash "$POMO" start 2>&1); rc=$?
+out=$(POMO_FOCUS_SECONDS=0 bash "$POMO" start </dev/null 2>&1); rc=$?
 assert_eq 'durasi 0 ditolak: exit code 1' "$rc" '1'
 assert_contains 'durasi 0 ditolak: pesan error' "$out" 'invalid duration'
 
@@ -231,7 +231,7 @@ assert_eq 'status --json tanpa sesi: exit code 1' "$rc" '1'
 export XDG_DATA_HOME="$TMP/data-status"
 mkdir -p "$XDG_RUNTIME_DIR"
 PATH="$TMP/fakebin:$PATH" POMO_FOCUS_SECONDS=4 POMO_ANIMATION=off \
-    bash "$POMO" start >/dev/null 2>&1 &
+    bash "$POMO" start </dev/null >/dev/null 2>&1 &
 pomo_pid=$!
 sleep 2
 out=$(bash "$POMO" status 2>&1); rc=$?
@@ -264,7 +264,7 @@ fi
 export XDG_DATA_HOME="$TMP/data-resume"
 rm -f "$XDG_RUNTIME_DIR/pomo.state"
 PATH="$TMP/fakebin:$PATH" POMO_FOCUS_SECONDS=5 POMO_ANIMATION=off \
-    bash "$POMO" start >/dev/null 2>&1 &
+    bash "$POMO" start </dev/null >/dev/null 2>&1 &
 victim=$!
 sleep 2
 kill -9 "$victim"
@@ -275,7 +275,7 @@ else
     ko 'resume: kill -9 meninggalkan state' 'file state tidak ada'
 fi
 PATH="$TMP/fakebin:$PATH" POMO_FOCUS_SECONDS=5 POMO_ANIMATION=off \
-    bash "$POMO" resume >/dev/null 2>&1
+    bash "$POMO" resume </dev/null >/dev/null 2>&1
 rc=$?
 assert_eq 'resume: sesi sisa selesai dengan exit 0' "$rc" '0'
 if [[ ! -f $XDG_RUNTIME_DIR/pomo.state ]]; then
@@ -311,7 +311,7 @@ fi
 # ------------------------------------------------------ notify hook (env)
 export XDG_DATA_HOME="$TMP/data-notify"
 out=$(PATH="$TMP/fakebin:$PATH" POMO_FOCUS_SECONDS=2 POMO_ANIMATION=off \
-    POMO_NOTIFY_CMD='printf HOOK:%s:%s "$1" "$2"' bash "$POMO" start 2>&1)
+    POMO_NOTIFY_CMD='printf HOOK:%s:%s "$1" "$2"' bash "$POMO" start </dev/null 2>&1)
 assert_contains 'notify hook: dipanggil dengan judul' "$out" 'HOOK:Focus session complete:'
 assert_contains 'notify hook: menerima isi pesan' "$out" 'minutes of focus logged'
 
