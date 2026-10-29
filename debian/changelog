@@ -1,3 +1,13 @@
+pomo (1.5.0-1) unstable; urgency=medium
+
+  * Session-specific sounds: separate sounds for focus and break end
+    (FOCUS_SOUND/BREAK_SOUND in pomo.conf, played via paplay/aplay with
+    a bell fallback).
+  * "pomo" without arguments now asks for confirmation before starting
+    a focus session.
+
+ -- Yapidev <yapidev@users.noreply.github.com>  Thu, 29 Oct 2026 07:30:00 +0700
+
 pomo (1.4.0-1) unstable; urgency=medium
 
   * Config file pomo.conf for durations and the NOTIFY_CMD hook.
