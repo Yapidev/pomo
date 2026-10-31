@@ -1222,7 +1222,25 @@ open_menu() {
                 done
                 sel=$j
                 ;;
-            '')    MENU_RESULT=${actions[sel]:-} ;;   # Enter: item terpilih (bisa kosong = abaikan)
+            '')
+                # Enter: jalankan action item terpilih. Item sesi/back/quit
+                # mengakhiri menu (MENU_RESULT), overlay (help/stats/durations/
+                # theme) dijalankan lalu menu digambar ulang.
+                case ${actions[sel]} in
+                    focus|short_break|long_break|back|quit)
+                        MENU_RESULT=${actions[sel]}
+                        ;;
+                    help)      show_help_overlay ;;
+                    stats)     show_stats_overlay ;;
+                    durations) show_duration_config_overlay ;;
+                    theme)
+                        cycle_theme
+                        # Terapkan ulang warna mode agar menu (dan timer
+                        # setelahnya) langsung memakai tema yang baru.
+                        set_mode_colors "$CURRENT_MODE"
+                        ;;
+                esac
+                ;;
             1|f|F) MENU_RESULT='focus' ;;
             2|w|W) MENU_RESULT='short_break' ;;
             3)     MENU_RESULT='long_break' ;;
@@ -1358,7 +1376,7 @@ run_timer() {
                     short_break) return 3 ;;
                     long_break)  return 4 ;;
                     quit)        return 1 ;;
-                    back)
+                    *)  # back (atau nilai tak terduga): jangan biarkan timer beku
                         # Lanjutkan sesi dengan sisa waktu yang sama
                         if (( menu_was_paused == 0 )); then
                             paused=0

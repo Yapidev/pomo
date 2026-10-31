@@ -531,6 +531,38 @@ unit_rc=0
     open_menu >"$out_file" < <(printf '\033[B\033[B\n')
     [[ $MENU_RESULT == focus ]]
 
+    # REGRESI: Enter pada item overlay (help/stats/durations/theme) harus
+    # menjalankan action-nya dan menu tetap terbuka — bukan return dengan
+    # MENU_RESULT berisi nama action (dulu bikin timer beku/"crash").
+    # help: 5x DOWN dari idx 9 -> idx 4, Enter buka help, 'x' tutup, 'b' back
+    MENU_RESULT=''
+    open_menu >"$out_file" < <(printf '\033[B\033[B\033[B\033[B\033[B\nxb')
+    [[ $MENU_RESULT == back ]]
+    out=$(<"$out_file")
+    [[ $out == *'Menu keys'* ]]
+
+    # stats: 6x DOWN -> idx 5, Enter buka stats, 'x' tutup, 'b' back
+    MENU_RESULT=''
+    open_menu >"$out_file" < <(printf '\033[B\033[B\033[B\033[B\033[B\033[B\nxb')
+    [[ $MENU_RESULT == back ]]
+    out=$(<"$out_file")
+    [[ $out == *'STATS'* ]]
+
+    # durations: 7x DOWN -> idx 6, Enter buka overlay, 'b' ke menu, 'b' back
+    MENU_RESULT=''
+    open_menu >"$out_file" < <(printf '\033[B\033[B\033[B\033[B\033[B\033[B\033[B\nbb')
+    [[ $MENU_RESULT == back ]]
+    out=$(<"$out_file")
+    [[ $out == *'CUSTOMIZE DURATIONS'* ]]
+
+    # theme: 8x DOWN -> idx 7, Enter ganti tema, lalu 'b' back
+    MENU_RESULT=''
+    THEME_NAME=default
+    THEME_CHANGED=0
+    open_menu >"$out_file" < <(printf '\033[B\033[B\033[B\033[B\033[B\033[B\033[B\033[B\nb')
+    [[ $MENU_RESULT == back ]]
+    [[ $THEME_NAME == dracula && $THEME_CHANGED == 1 ]]
+
     # penanda (active) pada mode berjalan + overlay help bisa dibuka dari menu
     MENU_RESULT=''
     open_menu >"$out_file" < <(printf 'hxb')
