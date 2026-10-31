@@ -67,7 +67,9 @@ While the timer runs:
 | `q` | Quit           |
 
 Inside the menu (`m`): `1` focus · `2` short break · `3` long break ·
-`c` cycle theme · `t` stats · `h` help · `b` back · `q` quit.
+`h` help · `t` stats · `d` customize durations (`f`/`s`/`l` set focus/short/long,
+`r` reset to defaults, `a` save to config, `b` back) · `c` cycle theme ·
+`b` back · `q` quit.
 
 Only **completed** sessions are logged — skipping or switching writes nothing.
 
