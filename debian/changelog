@@ -1,3 +1,13 @@
+pomo (1.7.1-1) unstable; urgency=medium
+
+  * Fix: arrow-key + Enter in the menu now works on every item, not just
+    the session entries — Enter on Help/Stats/Customize durations/Cycle
+    theme runs the action instead of silently returning to a frozen
+    timer. run_timer treats any unexpected menu result as "back", so the
+    timer can no longer get stuck paused.
+
+ -- Yapidev <yapidev@users.noreply.github.com>  Sat, 31 Oct 2026 22:29:39 +0700
+
 pomo (1.7.0-1) unstable; urgency=medium
 
   * Timer screen shows cycle progress (●●○○) toward the long break.

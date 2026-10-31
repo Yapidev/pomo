@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ================================ KONSTANTA =================================
 
-readonly POMO_VERSION="1.7.0"
+readonly POMO_VERSION="1.7.1"
 
 # URL script mentah di GitHub; dipakai oleh subcommand "update"
 readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
