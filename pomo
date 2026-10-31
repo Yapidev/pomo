@@ -107,6 +107,11 @@ THEME_CHANGED=0
 # Mode sesi yang sedang berjalan (focus|short_break|long_break);
 # dipakai untuk menerapkan ulang warna mode setelah ganti tema
 CURRENT_MODE=''
+# Indikator progres siklus (●●○○) yang digambar di layar timer;
+# dihitung ulang oleh run_cycle sebelum setiap sesi.
+CYCLE_DOTS='○○○○'
+# Override mode berikutnya yang dipilih dari menu saat layar antar-sesi
+PROMPT_NEXT_MODE=''
 
 readonly -a THEME_NAMES=(default dracula gruvbox nord solarized matrix mono)
 
@@ -694,11 +699,13 @@ draw_ui() {
     local mm ss t elapsed pct bar_w filled bar
 
     # Terminal terlalu kecil: timer tetap jalan, tampilkan pesan singkat.
+    # Redraw memakai cursor-home seperti layar utama (tanpa clear penuh,
+    # agar tidak flicker setiap detik).
     if (( cols < MIN_COLS || rows < MIN_ROWS )); then
         local msg='Terminal too small (need 45x17) — the timer keeps running.'
         pad=$(( (cols - ${#msg}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
         printf -v line '%*s%s%s%s' "$pad" '' "$C_YELLOW" "$msg" "$C_RESET"
-        printf '%s%s' "${E}[2J" "$line"
+        printf '%s%s%s%s' "${E}[H" "$line" "${E}[K" "${E}[0J"
         return 0
     fi
 
@@ -752,7 +759,7 @@ draw_ui() {
     hbar=${hbar// /─}
 
     # ---- susun frame ----
-    local top_pad=$(( (rows - 15) / 2 - 1 ))
+    local top_pad=$(( (rows - 16) / 2 - 1 ))
     top_pad=$(( top_pad < 0 ? 0 : top_pad ))
     for (( n = 0; n < top_pad; n++ )); do frame+="${E}[K"$'\n'; done
 
@@ -789,6 +796,12 @@ draw_ui() {
         $(( elapsed / 60 )) $(( elapsed % 60 )) $(( total / 60 )) $(( total % 60 )) "$pct"
     pad=$(( (cols - ${#info}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
     printf -v line '%*s%s%s%s' "$pad" '' "$C_DIM" "$info" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+
+    # baris progres siklus: fokus yang selesai di siklus berjalan
+    local cyc="Cycle: $CYCLE_DOTS — long break every $CYCLES_BEFORE_LONG"
+    pad=$(( (cols - ${#cyc}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+    printf -v line '%*s%s%s%s' "$pad" '' "$C_DIM" "$cyc" "$C_RESET"
     frame+="$line${E}[K"$'\n'
     frame+="${E}[K"$'\n'
 
@@ -886,9 +899,9 @@ KEY_HELP=(
     '  p   Pause / resume'
     '  s   Skip the current session'
     '  m   Menu (sessions, stats, durations, theme, help)'
-    '  q   Quit'
+    '  q   Quit (asks for confirmation)'
     ''
-    'Menu keys:'
+    'Menu keys (navigate with ↑/↓ + Enter, or direct keys):'
     '  1   Start a focus session'
     '  2   Start a short break'
     '  3   Start a long break'
@@ -904,6 +917,13 @@ KEY_HELP=(
     '  r      Reset to defaults (25/5/15 min)'
     '  a      Save durations to the config file'
     '  b      Back to the menu'
+    ''
+    'Between sessions:'
+    '  Enter  Start the next session'
+    '  m      Menu (pick any session)'
+    '  t      Stats'
+    '  d      Customize durations'
+    '  q      Quit'
 )
 
 MENU_RESULT=''
@@ -912,12 +932,37 @@ show_help_overlay() {
     OVERLAY_LINES=("${KEY_HELP[@]}")
     draw_overlay 'HELP' 'Press any key to go back'
     local k=''
-    IFS= read -r -s -n 1 k || true
+    read_key k || true
+}
+
+read_key() {
+    # Baca satu tombol; hasil ditulis ke variabel bernama $1.
+    # Escape sequence diterjemahkan: arrow keys menjadi UP/DOWN/LEFT/RIGHT.
+    # Return: 1 pada EOF, 0 jika ada tombol (Esc murni menghasilkan string kosong).
+    local __var=$1 ch rest
+    ch=''
+    if ! IFS= read -r -s -n 1 ch; then
+        return 1
+    fi
+    if [[ $ch == $'\x1b' ]]; then
+        rest=''
+        IFS= read -r -s -n 2 -t 0.05 rest || true
+        case $rest in
+            '[A') ch='UP' ;;
+            '[B') ch='DOWN' ;;
+            '[C') ch='RIGHT' ;;
+            '[D') ch='LEFT' ;;
+            *)    ch='' ;;
+        esac
+    fi
+    printf -v "$__var" '%s' "$ch"
+    return 0
 }
 
 show_stats_overlay() {
-    # Ringkasan statistik untuk overlay: hari ini + total 7 hari
-    local today ts=0 tm=0 i day
+    # Ringkasan statistik untuk overlay: hari ini + bar chart 7 hari
+    # (mengikuti tampilan "pomo stats" di CLI).
+    local today ts=0 tm=0 i day mins max_minutes=0 bar j filled
     today=$(date +%F)
     OVERLAY_LINES=(
         "Today — $today"
@@ -926,10 +971,23 @@ show_stats_overlay() {
         "  Breaks taken   : ${BREAK_COUNT[$today]:-0}"
     )
     if read_history; then
-        for (( i = 0; i < 7; i++ )); do
+        for (( i = 6; i >= 0; i-- )); do
+            day=$(date -d "-$i day" +%F)
+            mins=$(( ${FOCUS_SECS[$day]:-0} / 60 ))
+            (( mins > max_minutes )) && max_minutes=$mins
+        done
+        OVERLAY_LINES+=('' 'Last 7 days:')
+        for (( i = 6; i >= 0; i-- )); do
             day=$(date -d "-$i day" +%F)
             ts=$(( ts + ${FOCUS_COUNT[$day]:-0} ))
             tm=$(( tm + ${FOCUS_SECS[$day]:-0} / 60 ))
+            mins=$(( ${FOCUS_SECS[$day]:-0} / 60 ))
+            bar=''
+            if (( max_minutes > 0 )); then
+                filled=$(( mins * 20 / max_minutes ))
+                for (( j = 0; j < filled; j++ )); do bar+='▓'; done
+            fi
+            OVERLAY_LINES+=("  $day  ${FOCUS_COUNT[$day]:-0} sess  ${mins} min  $bar")
         done
         OVERLAY_LINES+=('' "7-day total: $ts sessions · $tm minutes")
     else
@@ -937,7 +995,7 @@ show_stats_overlay() {
     fi
     draw_overlay 'STATS' 'Press any key to go back'
     local k=''
-    IFS= read -r -s -n 1 k || true
+    read_key k || true
 }
 
 show_duration_config_overlay() {
@@ -1097,23 +1155,31 @@ EOF
     )
     draw_overlay 'SAVED' 'Press any key to continue'
     local k=''
-    IFS= read -r -s -n 1 k || true
+    read_key k || true
 }
 
 open_menu() {
     # Menu sesi. Hasil dikeluarkan lewat MENU_RESULT:
     # back | focus | short_break | long_break | quit
     # Timer dibekukan oleh pemanggil selama menu terbuka.
-    local key fm sm lm
+    # Navigasi: arrow atas/bawah + Enter, atau tombol langsung (1/2/3/h/t/d/c/b/q).
+    local key fm sm lm sel=9 i j line
+    local -a items actions
     while :; do
         fm=$(( FOCUS_SECONDS / 60 ))
         sm=$(( SHORT_BREAK_SECONDS / 60 ))
         lm=$(( LONG_BREAK_SECONDS / 60 ))
 
-        OVERLAY_LINES=(
-            "[1] Focus session ($fm min)"
-            "[2] Short break ($sm min)"
-            "[3] Long break ($lm min)"
+        # Tandai sesi yang sedang berjalan
+        local mark_f='' mark_s='' mark_l=''
+        [[ $CURRENT_MODE == focus ]]       && mark_f='  (active)'
+        [[ $CURRENT_MODE == short_break ]] && mark_s='  (active)'
+        [[ $CURRENT_MODE == long_break ]]  && mark_l='  (active)'
+
+        items=(
+            "[1] Focus session ($fm min)$mark_f"
+            "[2] Short break ($sm min)$mark_s"
+            "[3] Long break ($lm min)$mark_l"
             ''
             '[h] Help'
             '[t] Stats'
@@ -1123,14 +1189,38 @@ open_menu() {
             '[b] Back to timer'
             '[q] Quit'
         )
-        draw_overlay 'MENU' ''
+        actions=( focus short_break long_break '' help stats durations theme '' back quit )
+
+        OVERLAY_LINES=()
+        for (( i = 0; i < ${#items[@]}; i++ )); do
+            if (( i == sel )); then line="> ${items[i]}"; else line="  ${items[i]}"; fi
+            OVERLAY_LINES+=("$line")
+        done
+        draw_overlay 'MENU' '↑/↓ select · Enter choose · b back'
 
         key=''
-        if ! IFS= read -r -s -n 1 key; then
+        if ! read_key key; then
             MENU_RESULT='back'   # EOF di stdin
             return
         fi
         case $key in
+            UP)
+                j=$sel
+                while :; do
+                    j=$(( (j - 1 + ${#items[@]}) % ${#items[@]} ))
+                    [[ -n ${actions[j]} ]] && break
+                done
+                sel=$j
+                ;;
+            DOWN)
+                j=$sel
+                while :; do
+                    j=$(( (j + 1) % ${#items[@]} ))
+                    [[ -n ${actions[j]} ]] && break
+                done
+                sel=$j
+                ;;
+            '')    MENU_RESULT=${actions[sel]:-} ;;   # Enter: item terpilih (bisa kosong = abaikan)
             1|f|F) MENU_RESULT='focus' ;;
             2|w|W) MENU_RESULT='short_break' ;;
             3)     MENU_RESULT='long_break' ;;
@@ -1141,7 +1231,7 @@ open_menu() {
                    # Terapkan ulang warna mode agar menu (dan timer
                    # setelahnya) langsung memakai tema yang baru.
                    set_mode_colors "$CURRENT_MODE" ;;
-            b|B|m|M|'') MENU_RESULT='back' ;;   # Enter juga kembali
+            b|B|m|M) MENU_RESULT='back' ;;
             q|Q)   MENU_RESULT='quit' ;;
         esac
         if [[ -n $MENU_RESULT ]]; then
@@ -1221,7 +1311,23 @@ run_timer() {
 
         case $key in
             q|Q)
-                return 1
+                # Konfirmasi quit: salah tekan tidak langsung keluar dari sesi
+                OVERLAY_LINES=(
+                    'Quit pomo?'
+                    ''
+                    'The current session ends — nothing is logged.'
+                    ''
+                    '[q] Quit    ·    any other key to go back'
+                )
+                draw_overlay 'QUIT' ''
+                local qk=''
+                if ! read_key qk; then
+                    return 1   # EOF di stdin = quit
+                fi
+                if [[ $qk == q || $qk == Q ]]; then
+                    return 1
+                fi
+                last_frame=''   # paksa redraw timer setelah overlay
                 ;;
             p|P)
                 if (( paused )); then
@@ -1269,24 +1375,40 @@ run_timer() {
 
 prompt_continue() {
     # $1 judul, $2 pesan, $3 label mode berikutnya
-    # Return: 0 = lanjut, 1 = berhenti
+    # Return: 0 = lanjut, 1 = berhenti.
+    # Bila user memilih sesi lewat menu di layar ini, mode berikutnya
+    # di-override lewat global PROMPT_NEXT_MODE.
     if (( ! INTERACTIVE )); then
         # Mode non-interaktif (stdin bukan tty): sesi tunggal lalu selesai.
         printf '%s\n' "$1 — $2"
         return 1
     fi
 
-    draw_message "$1" "$2" "Press [Enter] to start $3  ·  [q] to quit"
-
     local ans=''
     while :; do
+        draw_message "$1" "$2" \
+            "Press [Enter] to start $3  ·  [m] menu  ·  [t] stats  ·  [d] durations  ·  [q] to quit"
         ans=''
-        if ! IFS= read -r -s -n 1 ans; then
+        if ! read_key ans; then
             return 1   # EOF di stdin
         fi
         case $ans in
             '') return 0 ;;       # Enter ditekan
             q|Q) return 1 ;;
+            m|M)
+                MENU_RESULT=''
+                open_menu
+                case $MENU_RESULT in
+                    focus|short_break|long_break)
+                        PROMPT_NEXT_MODE=$MENU_RESULT
+                        return 0
+                        ;;
+                    quit) return 1 ;;
+                    back) : ;;    # tampilkan lagi layar konfirmasi
+                esac
+                ;;
+            t|T) show_stats_overlay ;;
+            d|D) show_duration_config_overlay ;;
         esac
     done
 }
@@ -1324,6 +1446,18 @@ run_cycle() {
         label=$(mode_label "$mode")
         CURRENT_MODE=$mode
         set_mode_colors "$mode"
+
+        # Indikator progres siklus untuk layar timer (● = fokus selesai di
+        # siklus berjalan; saat long break semua terisi).
+        local fd dots='' di
+        if [[ $mode == long_break ]]; then
+            fd=$CYCLES_BEFORE_LONG
+        else
+            fd=$(( focus_done % CYCLES_BEFORE_LONG ))
+        fi
+        for (( di = 0; di < fd; di++ )); do dots+='●'; done
+        for (( di = fd; di < CYCLES_BEFORE_LONG; di++ )); do dots+='○'; done
+        CYCLE_DOTS=$dots
 
         rc=0
         if (( resume_remaining )); then
@@ -1397,6 +1531,12 @@ run_cycle() {
             if ! prompt_continue 'SESSION SKIPPED' "$msg" "$next_label"; then
                 return 0
             fi
+        fi
+        # Mode berikutnya bisa di-override dari menu di layar antar-sesi
+        if [[ -n ${PROMPT_NEXT_MODE:-} ]]; then
+            next=$PROMPT_NEXT_MODE
+            PROMPT_NEXT_MODE=''
+            next_label=$(mode_label "$next")
         fi
         mode=$next
     done

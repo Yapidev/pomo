@@ -59,17 +59,24 @@ sudo install -Dm755 pomo /usr/local/bin/pomo
 
 While the timer runs:
 
-| Key | Action         |
-|-----|----------------|
-| `p` | Pause / resume |
-| `s` | Skip session   |
-| `m` | Menu           |
-| `q` | Quit           |
+| Key | Action                   |
+|-----|--------------------------|
+| `p` | Pause / resume           |
+| `s` | Skip session             |
+| `m` | Menu                     |
+| `q` | Quit (asks confirmation) |
 
-Inside the menu (`m`): `1` focus · `2` short break · `3` long break ·
+The timer screen shows a cycle indicator (`Cycle: ●●○○`) — a long break
+comes every 4th completed focus session.
+
+Inside the menu (`m`): navigate with `↑`/`↓` + `Enter`, or direct keys:
+`1` focus · `2` short break · `3` long break ·
 `h` help · `t` stats · `d` customize durations (`f`/`s`/`l` set focus/short/long,
 `r` reset to defaults, `a` save to config, `b` back) · `c` cycle theme ·
-`b` back · `q` quit.
+`b` back · `q` quit. The currently running session is marked `(active)`.
+
+Between sessions: `Enter` start the next session · `m` menu · `t` stats ·
+`d` customize durations · `q` quit.
 
 Only **completed** sessions are logged — skipping or switching writes nothing.
 
