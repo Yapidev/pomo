@@ -1,3 +1,17 @@
+pomo (1.7.0-1) unstable; urgency=medium
+
+  * Timer screen shows cycle progress (●●○○) toward the long break.
+  * Menu: arrow-key navigation (↑/↓ + Enter) alongside the direct keys,
+    and the currently running session is marked "(active)".
+  * Between sessions: new m (menu — pick any session), t (stats) and
+    d (customize durations) shortcuts; quitting from the timer now asks
+    for confirmation first.
+  * The in-TUI stats overlay (t) shows the same today + 7-day chart as
+    "pomo stats"; fixed its "Today" section always showing zeros.
+  * Small terminals: the "too small" notice no longer flickers.
+
+ -- Yapidev <yapidev@users.noreply.github.com>  Sat, 31 Oct 2026 22:04:46 +0700
+
 pomo (1.6.0-1) unstable; urgency=medium
 
   * Session-specific sounds: separate sounds for focus and break end

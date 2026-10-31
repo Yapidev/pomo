@@ -5,9 +5,9 @@ to install.
 
 ![pomo focus session](assets/screenshot_new.png)
 
-Big block-digit countdown, progress bar, colors, desktop notifications
-and a session log. Run `pomo` to confirm before starting a focus
-session, or use `pomo start` to start immediately.
+Big block-digit countdown, progress bar, cycle indicator, colors,
+desktop notifications and a session log. Run `pomo` to confirm before
+starting a focus session, or use `pomo start` to start immediately.
 
 ## Install
 
@@ -77,6 +77,9 @@ Inside the menu (`m`): navigate with `↑`/`↓` + `Enter`, or direct keys:
 
 Between sessions: `Enter` start the next session · `m` menu · `t` stats ·
 `d` customize durations · `q` quit.
+
+The stats overlay (`t` in the menu or between sessions) shows the same
+today + 7-day chart as `pomo stats`.
 
 Only **completed** sessions are logged — skipping or switching writes nothing.
 
