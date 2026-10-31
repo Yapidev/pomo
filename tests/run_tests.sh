@@ -2,7 +2,10 @@
 #
 # tests/run_tests.sh — test suite untuk pomo, murni Bash tanpa framework.
 # Menjalankan skenario CLI/non-TUI: versi, help, stats, validasi durasi,
-# penulisan & pembacaan riwayat, dan guard self-update.
+# penulisan & pembacaan riwayat, dan guard self-update —
+# plus unit test TUI (read_key, draw_ui, menu, overlay, prompt_continue,
+# run_timer) dengan men-source pomo dan mensimulasikan stdin via process
+# substitution.
 #
 # Jalankan dari mana saja: tests/run_tests.sh
 
@@ -448,6 +451,218 @@ out=$(bash "$install_dir/pomo" update 2>&1); rc=$?
 assert_eq 'update pada file read-only: exit code 1' "$rc" '1'
 assert_contains 'update read-only: pesan error' "$out" 'is not writable'
 chmod 644 "$install_dir/pomo"
+
+# ------------------------------------------ unit: read_key (tombol & arrow keys)
+unit_rc=0
+(
+    set -e
+    source "$POMO"
+    # EOF -> rc 1
+    rc=0; read_key k </dev/null || rc=$?
+    [[ $rc == 1 ]]
+    # tombol biasa diteruskan apa adanya
+    k=$(printf 'a' | { read_key k; printf '%s' "$k"; })
+    [[ $k == a ]]
+    # arrow keys diterjemahkan dari escape sequence
+    k=$(printf '\033[B' | { read_key k; printf '%s' "$k"; })
+    [[ $k == DOWN ]]
+    k=$(printf '\033[A' | { read_key k; printf '%s' "$k"; })
+    [[ $k == UP ]]
+    # Esc murni -> string kosong (bukan arrow, tidak bocor ke pembacaan berikutnya)
+    k=$(printf '\033' | { read_key k; printf '%s' "$k"; })
+    [[ -z $k ]]
+)
+unit_rc=$?
+assert_eq 'unit: read_key (EOF, tombol biasa, arrow, Esc)' "$unit_rc" '0'
+
+# ------------------------------------------ unit: draw_ui (baris siklus + anti-flicker)
+unit_rc=0
+(
+    set -e
+    source "$POMO"
+    COLOR_ENABLED=1
+    apply_theme default
+    set_mode_colors focus
+    ANIM_ENABLED=0
+    TERM_COLS=80 TERM_LINES=24
+    CYCLE_DOTS='●●○○'
+    out=$(draw_ui 754 1500 'FOCUS SESSION' 0)
+    [[ $out == *'Cycle: ●●○○'* ]]
+    [[ $out == *'Elapsed 12:26 of 25:00'* ]]
+    # terminal terlalu kecil: pesan muncul TANPA clear penuh (anti-flicker)
+    TERM_COLS=30 TERM_LINES=10
+    out=$(draw_ui 754 1500 'FOCUS SESSION' 0)
+    [[ $out == *'Terminal too small'* ]]
+    [[ $out != *$'\033[2J'* ]]
+)
+unit_rc=$?
+assert_eq 'unit: draw_ui menampilkan indikator siklus & anti-flicker terminal kecil' "$unit_rc" '0'
+
+# ------------------------------------------ unit: open_menu (tombol, arrow, penanda aktif)
+unit_rc=0
+(
+    set -e
+    source "$POMO"
+    COLOR_ENABLED=1
+    apply_theme default
+    set_mode_colors focus
+    INTERACTIVE=1
+    TERM_COLS=80 TERM_LINES=30
+    CURRENT_MODE=long_break
+    out_file="$TMP/menu.out"
+
+    # tombol langsung
+    MENU_RESULT=''
+    open_menu >"$out_file" < <(printf '2')
+    [[ $MENU_RESULT == short_break ]]
+
+    # Enter default = back (seleksi awal ada di "Back to timer")
+    MENU_RESULT=''
+    open_menu >"$out_file" < <(printf '\n')
+    [[ $MENU_RESULT == back ]]
+
+    # q = quit
+    MENU_RESULT=''
+    open_menu >"$out_file" < <(printf 'q')
+    [[ $MENU_RESULT == quit ]]
+
+    # arrow: dari back (idx 9) DOWN -> quit (10), DOWN -> focus (0), Enter
+    MENU_RESULT=''
+    open_menu >"$out_file" < <(printf '\033[B\033[B\n')
+    [[ $MENU_RESULT == focus ]]
+
+    # penanda (active) pada mode berjalan + overlay help bisa dibuka dari menu
+    MENU_RESULT=''
+    open_menu >"$out_file" < <(printf 'hxb')
+    [[ $MENU_RESULT == back ]]
+    out=$(<"$out_file")
+    [[ $out == *'Long break (15 min)  (active)'* ]]
+    [[ $out == *'Menu keys'* ]]
+)
+unit_rc=$?
+assert_eq 'unit: open_menu (tombol langsung, arrow+Enter, Enter=back, q, penanda aktif, help)' "$unit_rc" '0'
+
+# ------------------------------------------ unit: prompt_continue (shortcut antar-sesi)
+unit_rc=0
+(
+    set -e
+    export XDG_DATA_HOME="$TMP/data-pc"
+    source "$POMO"
+    COLOR_ENABLED=1
+    apply_theme default
+    set_mode_colors focus
+    INTERACTIVE=1
+    TERM_COLS=80 TERM_LINES=30
+    PROMPT_NEXT_MODE=''
+    out_file="$TMP/pc.out"
+
+    # Enter = lanjut, tanpa override
+    rc=0; prompt_continue 'T' 'm' 'NEXT' >"$out_file" < <(printf '\n') || rc=$?
+    [[ $rc == 0 && -z $PROMPT_NEXT_MODE ]]
+
+    # q = berhenti
+    rc=0; prompt_continue 'T' 'm' 'NEXT' >/dev/null < <(printf 'q') || rc=$?
+    [[ $rc == 1 ]]
+
+    # m lalu 3: mode berikutnya di-override dari menu
+    rc=0; prompt_continue 'T' 'm' 'NEXT' >/dev/null < <(printf 'm3') || rc=$?
+    [[ $rc == 0 && $PROMPT_NEXT_MODE == long_break ]]
+    PROMPT_NEXT_MODE=''
+
+    # t: overlay stats muncul, lalu Enter lanjut
+    rc=0; prompt_continue 'T' 'm' 'NEXT' >"$out_file" < <(printf 't\n\n') || rc=$?
+    [[ $rc == 0 ]]
+    out=$(<"$out_file")
+    [[ $out == *'No sessions recorded yet.'* ]]
+
+    # non-interaktif: selalu berhenti (rc 1) dengan pesan satu baris
+    INTERACTIVE=0
+    rc=0; out=$(prompt_continue 'T' 'm' 'NEXT' </dev/null 2>&1) || rc=$?
+    [[ $rc == 1 && $out == 'T — m' ]]
+)
+unit_rc=$?
+assert_eq 'unit: prompt_continue (Enter, q, override via menu, stats, non-interaktif)' "$unit_rc" '0'
+
+# ------------------------------------------ unit: show_stats_overlay (bar chart 7 hari)
+unit_rc=0
+(
+    set -e
+    export XDG_DATA_HOME="$TMP/data-stats-tui"
+    mkdir -p "$XDG_DATA_HOME/pomo"
+    today=$(date +%F)
+    printf '%s|focus|1500\n%s|focus|1500\n%s|short_break|300\n' "$today" "$today" "$today" \
+        > "$XDG_DATA_HOME/pomo/history.log"
+    source "$POMO"
+    COLOR_ENABLED=1
+    apply_theme default
+    set_mode_colors focus
+    TERM_COLS=80 TERM_LINES=40
+    read_key() { return 1; }   # overlay tidak menunggu tombol
+    out=$(show_stats_overlay 2>&1)
+    [[ $out == *"Today — $today"* ]]
+    [[ $out == *'Focus sessions : 2'* ]]
+    [[ $out == *'Last 7 days:'* ]]
+    [[ $out == *"$today  2 sess  50 min"* ]]
+    [[ $out == *'7-day total: 2 sessions · 50 minutes'* ]]
+)
+unit_rc=$?
+assert_eq 'unit: show_stats_overlay menampilkan bar chart 7 hari' "$unit_rc" '0'
+
+# ------------------------------------------ unit: run_timer konfirmasi quit
+unit_rc=0
+(
+    set -e
+    export XDG_RUNTIME_DIR="$TMP/run-tui"
+    mkdir -p "$XDG_RUNTIME_DIR"
+    source "$POMO"
+    COLOR_ENABLED=1
+    apply_theme default
+    set_mode_colors focus
+    INTERACTIVE=1
+    ANIM_ENABLED=0
+    TERM_COLS=80 TERM_LINES=24
+
+    # q lalu q: konfirmasi -> quit (rc 1)
+    rc=0; run_timer 1 'FOCUS SESSION' >/dev/null 2>&1 < <(printf 'qq') || rc=$?
+    [[ $rc == 1 ]]
+
+    # q lalu tombol lain: batal -> timer jalan sampai selesai (rc 0)
+    rc=0; run_timer 1 'FOCUS SESSION' >/dev/null 2>&1 < <(printf 'qx') || rc=$?
+    [[ $rc == 0 ]]
+)
+unit_rc=$?
+assert_eq 'unit: run_timer konfirmasi quit (qq=quit, qx=batal)' "$unit_rc" '0'
+
+# ------------------------------------------ unit: run_cycle mengisi CYCLE_DOTS (end-to-end)
+unit_rc=0
+(
+    set -e
+    export XDG_DATA_HOME="$TMP/data-cycle"
+    export XDG_RUNTIME_DIR="$TMP/run-cycle"
+    mkdir -p "$XDG_RUNTIME_DIR"
+    export POMO_FOCUS_SECONDS=2 POMO_SHORT_BREAK_SECONDS=2 POMO_LONG_BREAK_SECONDS=2
+    export POMO_ANIMATION=off POMO_NOTIFY_CMD=true
+    source "$POMO"
+    COLOR_ENABLED=1
+    apply_theme default
+    INTERACTIVE=1
+    ANIM_ENABLED=0
+    TERM_COLS=80 TERM_LINES=24
+
+    # fokus 2s selesai -> Enter -> short break (focus_done=1 -> ●○○○) -> q berhenti
+    rc=0
+    run_cycle focus >/dev/null 2>&1 < <(sleep 3; printf '\n'; sleep 3; printf 'q') || rc=$?
+    [[ $rc == 0 ]]
+    [[ $CYCLE_DOTS == '●○○○' ]]
+)
+unit_rc=$?
+assert_eq 'unit: run_cycle mengisi CYCLE_DOTS (●○○○ setelah 1 fokus selesai)' "$unit_rc" '0'
+
+# ------------------------------------------ help: KEY_HELP mencakup tombol baru
+out=$(bash "$POMO" --help 2>&1)
+assert_contains '--help: blok Between sessions' "$out" 'Between sessions:'
+assert_contains '--help: menu dengan navigasi arrow' "$out" 'navigate with'
+assert_contains '--help: quit dengan konfirmasi' "$out" 'Quit (asks for confirmation)'
 
 # --------------------------------------------------------------- ringkasan
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

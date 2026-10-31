@@ -962,15 +962,17 @@ read_key() {
 show_stats_overlay() {
     # Ringkasan statistik untuk overlay: hari ini + bar chart 7 hari
     # (mengikuti tampilan "pomo stats" di CLI).
-    local today ts=0 tm=0 i day mins max_minutes=0 bar j filled
+    local today ts=0 tm=0 i day mins max_minutes=0 bar j filled have_history
     today=$(date +%F)
+    # Baca riwayat DULU: bagian "Today" memakai FOCUS_COUNT & co.
+    if read_history; then have_history=1; else have_history=0; fi
     OVERLAY_LINES=(
         "Today — $today"
         "  Focus sessions : ${FOCUS_COUNT[$today]:-0}"
         "  Focus minutes  : $(( ${FOCUS_SECS[$today]:-0} / 60 ))"
         "  Breaks taken   : ${BREAK_COUNT[$today]:-0}"
     )
-    if read_history; then
+    if (( have_history )); then
         for (( i = 6; i >= 0; i-- )); do
             day=$(date -d "-$i day" +%F)
             mins=$(( ${FOCUS_SECS[$day]:-0} / 60 ))
