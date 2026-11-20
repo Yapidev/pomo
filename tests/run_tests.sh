@@ -10,7 +10,7 @@
 # Jalankan dari mana saja: tests/run_tests.sh
 
 # shellcheck source=/dev/null
-# shellcheck disable=SC2034  # unit test mengatur global yang dipakai fungsi pomo yang di-source
+# shellcheck disable=SC2030,SC2031,SC2034,SC2329  # unit test berjalan di subshell terisolasi, menyetel global & mock fungsi pomo yang di-source
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -186,7 +186,7 @@ unit_rc=0
     [[ $C_YELLOW == $'\033[93m' ]]
 
     theme_valid nord
-    ! theme_valid bogus
+    theme_valid bogus && exit 1
 
     # pixel_anim (intro): reveal 0 = semua piksel tersembunyi
     out=$(pixel_anim '█████' 0 0 0)
