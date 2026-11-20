@@ -85,19 +85,20 @@ Only **completed** sessions are logged — skipping or switching writes nothing.
 
 ## Commands
 
-| Command         | What it does                                     |
-|-----------------|--------------------------------------------------|
-| `pomo`          | Confirm, then start a focus session (25 min)     |
-| `pomo start`    | Start focus immediately (25 min)                 |
-| `pomo -w`       | Short break (5 min)                              |
-| `pomo -W`       | Long break (15 min)                              |
-| `pomo resume`   | Resume an interrupted session                    |
-| `pomo stats`    | Today's summary + 7-day chart                    |
-| `pomo status`   | One-line status for status bars                  |
-| `pomo config`   | Show config file + durations                     |
-| `pomo theme`    | Show / pick a color theme                        |
-| `pomo update`   | Self-update from GitHub                          |
-| `pomo --help`   | Everything above, in the terminal                |
+| Command                   | What it does                                           |
+|---------------------------|--------------------------------------------------------|
+| `pomo [-t "task"]`        | Confirm, then start a focus session (25 min)           |
+| `pomo start [-t "task"]`  | Start focus immediately (25 min)                       |
+| `pomo -w`                 | Short break (5 min)                                    |
+| `pomo -W`                 | Long break (15 min)                                    |
+| `pomo resume`             | Resume an interrupted session                          |
+| `pomo stats`              | Today's summary + 7-day chart + top apps today         |
+| `pomo recap [today\|last]`| Focus activity recap (apps, switches, active %)        |
+| `pomo status`             | One-line status for status bars                        |
+| `pomo config`             | Show config file, durations, audio, and tracking       |
+| `pomo theme`              | Show / pick a color theme                              |
+| `pomo update`             | Self-update from GitHub                                |
+| `pomo --help`             | Everything above, in the terminal                      |
 
 The cycle is automatic: every 4th completed focus session is followed by
 a long break, the others by a short break. You confirm before each next
@@ -233,6 +234,30 @@ The timer uses a pixel-style animation: digits light up pixel by pixel
 at session start, and the colon blinks every second. Set
 `POMO_ANIMATION=off` to disable the animations.
 
+## Focus Activity Recap
+
+During focus sessions, pomo can automatically record **which applications
+you used**, how many times you switched apps, and an **active vs idle**
+estimate — then show a Focus Recap Card when the session finishes.
+
+- **Privacy-first:** No keylogging, no root privileges, and window titles
+  are never saved to disk — only normalized app names (e.g. `code`,
+  `firefox`, `ghostty`), stored locally.
+- **Supported backends (auto-detected):** Hyprland (`hyprctl`), Sway
+  (`swaymsg`), and X11 (`xdotool` / `xprop` + optional `xprintidle`).
+  On Wayland (Hyprland/Sway), installing `swayidle` enables compositor-level
+  keyboard + touchpad/mouse idle detection via `ext-idle-notify-v1` (still
+  no keylogging and no root); without `swayidle`, pomo falls back to cursor
+  & active-window changes. Gracefully falls back to timer-only when no
+  desktop backend is available.
+- **Optional session task:** Label a focus session with
+  `pomo -t "Write chapter 3"` or `pomo start -t "API refactor"`.
+- **View recaps anytime:** Run `pomo recap` (today's sessions + top apps)
+  or `pomo recap last`.
+- **Disable tracking:** Set `POMO_TRACKING=off` for one run or
+  `ACTIVITY_TRACKING=off` in `~/.config/pomo/pomo.conf`. You can also tune
+  the idle cutoff with `IDLE_THRESHOLD_SECONDS=60` (or `POMO_IDLE_THRESHOLD`).
+
 ## Where is my data?
 
 Completed sessions are appended to
@@ -241,6 +266,13 @@ Completed sessions are appended to
 
 ```
 2026-10-16|focus|1500
+```
+
+Focus activity recaps (only for completed focus sessions) are appended to
+`~/.local/share/pomo/activity.log`:
+
+```
+2026-11-20|13:55|1500|Write chapter 3|6|1380|120|code=1080,firefox=300,ghostty=120
 ```
 
 Plain text — grep it, back it up, or delete it. That is all pomo stores.
