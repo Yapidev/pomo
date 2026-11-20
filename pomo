@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ================================ KONSTANTA =================================
 
-readonly POMO_VERSION="1.7.1"
+readonly POMO_VERSION="1.8.0"
 
 # URL script mentah di GitHub; dipakai oleh subcommand "update"
 readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
@@ -77,8 +77,12 @@ E=$'\033'   # escape character
 
 # Warna hanya aktif jika stdout adalah tty
 COLOR_ENABLED=0
+TRUECOLOR=0
 if [[ -t 1 ]]; then
     COLOR_ENABLED=1
+    if [[ ${COLORTERM:-} =~ ^(truecolor|24bit)$ ]]; then
+        TRUECOLOR=1
+    fi
     C_RESET=$'\033[0m';  C_BOLD=$'\033[1m';  C_DIM=$'\033[2m'
     C_GREEN=$'\033[92m'; C_YELLOW=$'\033[93m'; C_BLUE=$'\033[94m'
     C_MAGENTA=$'\033[95m'; C_CYAN=$'\033[96m'; C_WHITE=$'\033[97m'
@@ -93,6 +97,9 @@ C_TITLE=''
 C_DIGITS=''
 C_BORDER=''
 C_BAR=''
+C_COLON=''
+C_KEY=''
+declare -a C_DIGIT_GRAD=('' '' '' '' '')
 
 # ================================ TEMAS ======================================
 # Sebuah tema = palet warna 256-color. Warna per-mode (focus/break) tetap
@@ -222,25 +229,26 @@ show_theme() {
 }
 
 # ============================ FONT BLOCK TIMER ==============================
-# Setiap glyph = 5 baris x 5 kolom. Untuk aman di semua locale (C/POSIX
-# menghitung string per byte), glyph dipecah per baris ke FONTROWS["<char>_<r>"]
-# lewat mapfile — bukan dengan substring slicing.
+# Setiap digit = 5 baris x 6 kolom dengan gaya rounded half-block (▄/▀/█);
+# colon = 5 baris x 2 kolom. Untuk aman di semua locale (C/POSIX menghitung
+# string per byte), glyph dipecah per baris ke FONTROWS["<char>_<r>"] lewat
+# mapfile — bukan dengan substring slicing.
 
 declare -A FONTROWS=()
 
 font_init() {
     local -A glyph=(
-        [0]=$'█████\n█   █\n█   █\n█   █\n█████'
-        [1]=$'  █  \n  █  \n  █  \n  █  \n  █  '
-        [2]=$'█████\n    █\n█████\n█    \n█████'
-        [3]=$'█████\n    █\n█████\n    █\n█████'
-        [4]=$'█   █\n█   █\n█████\n    █\n    █'
-        [5]=$'█████\n█    \n█████\n    █\n█████'
-        [6]=$'█████\n█    \n█████\n█   █\n█████'
-        [7]=$'█████\n    █\n    █\n    █\n    █'
-        [8]=$'█████\n█   █\n█████\n█   █\n█████'
-        [9]=$'█████\n█   █\n█████\n    █\n█████'
-        [:]=$'     \n  █  \n     \n  █  \n     '
+        [0]=$'▄████▄\n██  ██\n██  ██\n██  ██\n▀████▀'
+        [1]=$' ▄██  \n  ██  \n  ██  \n  ██  \n▄████▄'
+        [2]=$'▄████▄\n▀▀  ██\n ▄███▀\n██▀   \n██████'
+        [3]=$'▄████▄\n▀▀  ██\n  ███ \n▄▄  ██\n▀████▀'
+        [4]=$'██  ██\n██  ██\n▀█████\n    ██\n    ██'
+        [5]=$'██████\n██    \n█████▄\n▄▄  ██\n▀████▀'
+        [6]=$'▄████▄\n██  ▀▀\n█████▄\n██  ██\n▀████▀'
+        [7]=$'██████\n▀▀  ██\n   ██▀\n  ██  \n  ██  '
+        [8]=$'▄████▄\n██  ██\n ████ \n██  ██\n▀████▀'
+        [9]=$'▄████▄\n██  ██\n▀█████\n▄▄  ██\n▀████▀'
+        [:]=$'  \n██\n  \n██\n  '
     )
     local k grow r
     for k in "${!glyph[@]}"; do
@@ -311,7 +319,7 @@ load_config() {
     while IFS= read -r line || [[ -n $line ]]; do
         # Komentar satu baris penuh. '#' inline hanya dipahami untuk kunci
         # durasi; untuk NOTIFY_CMD '#' dianggap bagian dari perintah.
-        [[ $line == [[:space:]]#* ]] && continue
+        [[ $line =~ ^[[:space:]]*# ]] && continue
         [[ $line == *=* ]] || continue
         key=${line%%=*}
         raw=${line#*=}
@@ -320,7 +328,7 @@ load_config() {
         case $key in
             FOCUS_SECONDS|SHORT_BREAK_SECONDS|LONG_BREAK_SECONDS)
                 value=${raw%%#*}                 # buang komentar inline
-                value=${value// /}
+                value=${value//$'\t'/}; value=${value// /}
                 if [[ ! $value =~ ^[0-9]+$ ]] || (( value == 0 )); then
                     die "invalid value in $CONFIG_FILE: $key must be a positive integer (got '$value')"
                 fi
@@ -385,10 +393,18 @@ show_config() {
     else
         printf 'Notify hook : (default: notify-send)\n'
     fi
+    if [[ -n $SPEAKER_CMD ]]; then
+        printf 'Audio hook  : %s\n' "$SPEAKER_CMD"
+    else
+        printf 'Audio hook  : (default: paplay / aplay / beep / bell)\n'
+    fi
+    printf 'Focus sound : %s\n' "${FOCUS_SOUND:-$SPEAKER_SOUND}"
+    printf 'Break sound : %s\n' "$BREAK_SOUND"
     if [[ ! -f $CONFIG_FILE ]]; then
         printf 'To change durations permanently, create the file with lines like:\n'
         printf '  FOCUS_SECONDS=1800        # 30 min\n'
-        printf '  NOTIFY_CMD=paplay /usr/share/sounds/freedesktop/stereo/complete.oga\n'
+        printf "  NOTIFY_CMD=notify-send -u normal -a pomo \"\$1\" \"\$2\"\n"
+        printf '  FOCUS_SOUND=/usr/share/sounds/freedesktop/stereo/complete.oga\n'
     fi
 }
 
@@ -514,9 +530,9 @@ clear_state() {
     # agar instance pomo lain yang kebetulan jalan tidak ikut terhapus.
     # Selalu return 0: dipanggil dari trap EXIT, dan return value trap
     # menimpa exit code pomo.
-    local mode owner rest
+    local owner
     [[ -f $STATE_FILE ]] || return 0
-    IFS='|' read -r mode owner rest < "$STATE_FILE" || return 0
+    IFS='|' read -r _ owner _ < "$STATE_FILE" || return 0
     if [[ $owner == "$$" ]]; then
         rm -f "$STATE_FILE"
     fi
@@ -600,11 +616,11 @@ resume_read_state() {
     #         3 = sesi masih berjalan di proses lain.
     RESUME_MODE=''
     RESUME_REMAINING=0
-    local mode pid end total paused frozen
+    local mode pid end paused frozen
     if [[ ! -f $STATE_FILE ]]; then
         return 1
     fi
-    IFS='|' read -r mode pid end total paused frozen < "$STATE_FILE" || return 1
+    IFS='|' read -r mode pid end _ paused frozen < "$STATE_FILE" || return 1
     if [[ ! $mode =~ ^(focus|short_break|long_break)$ ]] \
         || [[ ! $pid =~ ^[0-9]+$ ]] || [[ ! $end =~ ^[0-9]+$ ]]; then
         return 1
@@ -664,7 +680,7 @@ pixel_anim() {
     local out='' pos ch h
     for (( pos = 0; pos < ${#rowstr}; pos++ )); do
         ch=${rowstr:pos:1}
-        if [[ $ch != '█' ]]; then
+        if [[ $ch != '█' && $ch != '▄' && $ch != '▀' ]]; then
             out+=$ch
             continue
         fi
@@ -672,22 +688,134 @@ pixel_anim() {
         if (( h >= reveal )); then
             out+=' '
         else
-            out+='█'
+            out+=$ch
         fi
     done
     printf '%s' "$out"
+}
+
+set_grad_256() {
+    C_DIGIT_GRAD=(
+        $'\033[38;5;'"$1"'m'
+        $'\033[38;5;'"$2"'m'
+        $'\033[38;5;'"$3"'m'
+        $'\033[38;5;'"$4"'m'
+        $'\033[38;5;'"$5"'m'
+    )
+}
+
+set_grad_rgb() {
+    C_DIGIT_GRAD=(
+        $'\033[38;2;'"$1"'m'
+        $'\033[38;2;'"$2"'m'
+        $'\033[38;2;'"$3"'m'
+        $'\033[38;2;'"$4"'m'
+        $'\033[38;2;'"$5"'m'
+    )
+}
+
+set_digit_gradient() {
+    # Gradient vertikal 5-baris adaptif sesuai tema & mode.
+    # Tema default tetap mengikuti palet ANSI terminal agar serasi dengan
+    # skema warna terminal user (Catppuccin, Tokyo Night, dll.); tema bernama
+    # memakai truecolor RGB bila tersedia dengan fallback 256-color.
+    if (( ! COLOR_ENABLED )); then
+        C_DIGIT_GRAD=('' '' '' '' '')
+        return 0
+    fi
+    case $THEME_NAME in
+        default)
+            case $1 in
+                focus)
+                    C_DIGIT_GRAD=("${C_BOLD}${C_CYAN}" "$C_CYAN" "${C_BOLD}${C_GREEN}" "$C_GREEN" $'\033[32m') ;;
+                short_break)
+                    C_DIGIT_GRAD=("${C_BOLD}${C_WHITE}" "${C_BOLD}${C_YELLOW}" "$C_YELLOW" "$C_YELLOW" $'\033[33m') ;;
+                long_break)
+                    C_DIGIT_GRAD=("${C_BOLD}${C_MAGENTA}" "$C_MAGENTA" "${C_BOLD}${C_BLUE}" "$C_BLUE" $'\033[34m') ;;
+            esac
+            ;;
+        dracula)
+            case $1 in
+                focus)
+                    if (( TRUECOLOR )); then set_grad_rgb '139;233;253' '115;240;210' '80;250;123' '64;224;110' '48;190;96'
+                    else set_grad_256 117 122 84 77 71; fi ;;
+                short_break)
+                    if (( TRUECOLOR )); then set_grad_rgb '255;210;150' '248;230;145' '241;250;140' '255;184;108' '235;140;110'
+                    else set_grad_256 223 229 228 215 209; fi ;;
+                long_break)
+                    if (( TRUECOLOR )); then set_grad_rgb '214;172;255' '189;147;249' '156;166;252' '139;233;253' '98;114;164'
+                    else set_grad_256 183 141 147 117 61; fi ;;
+            esac
+            ;;
+        gruvbox)
+            case $1 in
+                focus)
+                    if (( TRUECOLOR )); then set_grad_rgb '142;192;124' '168;190;80' '184;187;38' '152;151;26' '121;116;14'
+                    else set_grad_256 108 149 142 106 100; fi ;;
+                short_break)
+                    if (( TRUECOLOR )); then set_grad_rgb '251;210;100' '250;189;47' '254;158;36' '254;128;25' '214;93;14'
+                    else set_grad_256 221 214 208 202 166; fi ;;
+                long_break)
+                    if (( TRUECOLOR )); then set_grad_rgb '211;134;155' '177;148;154' '131;165;152' '104;157;106' '69;133;136'
+                    else set_grad_256 175 139 109 72 66; fi ;;
+            esac
+            ;;
+        nord)
+            case $1 in
+                focus)
+                    if (( TRUECOLOR )); then set_grad_rgb '143;188;187' '150;190;170' '163;190;140' '138;168;120' '112;142;104'
+                    else set_grad_256 109 115 108 107 65; fi ;;
+                short_break)
+                    if (( TRUECOLOR )); then set_grad_rgb '240;224;175' '235;203;139' '225;180;128' '216;158;120' '208;135;112'
+                    else set_grad_256 223 222 216 173 167; fi ;;
+                long_break)
+                    if (( TRUECOLOR )); then set_grad_rgb '180;142;173' '156;152;186' '129;161;193' '110;145;182' '94;129;172'
+                    else set_grad_256 139 146 110 68 67; fi ;;
+            esac
+            ;;
+        solarized)
+            case $1 in
+                focus)
+                    if (( TRUECOLOR )); then set_grad_rgb '42;161;152' '78;160;100' '133;153;0' '110;132;0' '88;110;0'
+                    else set_grad_256 37 71 100 100 58; fi ;;
+                short_break)
+                    if (( TRUECOLOR )); then set_grad_rgb '215;175;40' '181;137;0' '192;112;10' '203;75;22' '170;60;18'
+                    else set_grad_256 178 136 172 166 130; fi ;;
+                long_break)
+                    if (( TRUECOLOR )); then set_grad_rgb '140;145;215' '108;113;196' '72;126;203' '38;139;210' '28;106;166'
+                    else set_grad_256 104 61 68 33 25; fi ;;
+            esac
+            ;;
+        matrix)
+            if (( TRUECOLOR )); then set_grad_rgb '180;255;180' '80;255;80' '0;235;0' '0;185;0' '0;130;0'
+            else set_grad_256 120 82 46 40 28; fi
+            ;;
+        mono)
+            C_DIGIT_GRAD=("$C_BOLD" "$C_BOLD" '' '' "$C_DIM")
+            ;;
+        *)
+            C_DIGIT_GRAD=("$C_DIGITS" "$C_DIGITS" "$C_DIGITS" "$C_DIGITS" "$C_DIGITS")
+            ;;
+    esac
 }
 
 set_mode_colors() {
     # Warna per mode: fokus hijau/cyan, break pendek kuning, break panjang biru/magenta
     case $1 in
         focus)
-            C_TITLE=$C_CYAN; C_DIGITS=$C_GREEN; C_BORDER=$C_CYAN; C_BAR=$C_GREEN ;;
+            C_TITLE=$C_CYAN; C_DIGITS=$C_GREEN; C_BORDER=$C_CYAN; C_BAR=$C_GREEN
+            C_COLON=$C_CYAN; C_KEY=$C_CYAN ;;
         short_break)
-            C_TITLE=$C_YELLOW; C_DIGITS=$C_YELLOW; C_BORDER=$C_YELLOW; C_BAR=$C_YELLOW ;;
+            C_TITLE=$C_YELLOW; C_DIGITS=$C_YELLOW; C_BORDER=$C_YELLOW; C_BAR=$C_YELLOW
+            C_COLON=$C_WHITE; C_KEY=$C_YELLOW ;;
         long_break)
-            C_TITLE=$C_MAGENTA; C_DIGITS=$C_MAGENTA; C_BORDER=$C_BLUE; C_BAR=$C_BLUE ;;
+            C_TITLE=$C_MAGENTA; C_DIGITS=$C_MAGENTA; C_BORDER=$C_BLUE; C_BAR=$C_BLUE
+            C_COLON=$C_MAGENTA; C_KEY=$C_MAGENTA ;;
     esac
+    if [[ $THEME_NAME == mono ]] && (( COLOR_ENABLED )); then
+        C_TITLE=$C_BOLD; C_BORDER=$C_DIM; C_BAR=$C_BOLD; C_COLON=$C_BOLD; C_KEY=$C_BOLD
+    fi
+    set_digit_gradient "$1"
 }
 
 draw_ui() {
@@ -696,7 +824,7 @@ draw_ui() {
     local remaining=$1 total=$2 label=$3 paused=$4 reveal=${5:-100}
     local cols=$TERM_COLS rows=$TERM_LINES
     local frame='' pad pad_s line n i r c seg
-    local mm ss t elapsed pct bar_w filled bar
+    local mm ss t elapsed pct bar_w bar
 
     # Terminal terlalu kecil: timer tetap jalan, tampilkan pesan singkat.
     # Redraw memakai cursor-home seperti layar utama (tanpa clear penuh,
@@ -714,105 +842,185 @@ draw_ui() {
     printf -v t '%02d:%02d' "$mm" "$ss"
 
     elapsed=$(( total - remaining ))
+    (( elapsed < 0 )) && elapsed=0
     pct=$(( elapsed * 100 / total ))
+    (( pct < 0 )) && pct=0
+    (( pct > 100 )) && pct=100
 
-    # ---- progress bar ----
-    bar_w=$BAR_WIDTH
-    if (( cols - 6 < bar_w )); then bar_w=$(( cols - 6 )); fi
-    bar_w=$(( bar_w < 1 ? 1 : bar_w ))
-    filled=$(( pct * bar_w / 100 ))
-    if (( filled > bar_w )); then filled=$bar_w; fi
-    local bar_fill='' bar_rest=''
-    for (( i = 0; i < filled; i++ )); do bar_fill+='▓'; done
-    for (( i = 0; i < bar_w - filled; i++ )); do bar_rest+='░'; done
-    bar="${C_BAR}${bar_fill}${C_DIM}${bar_rest}${C_RESET}"
+    # Warna aktif card: saat pause, border/badge/bar beralih kuning dan digit meredup
+    local c_card_border=$C_BORDER c_hdr=$C_TITLE c_bar_active=$C_BAR c_colon_active=$C_COLON
+    if (( paused )); then
+        c_card_border=$C_YELLOW
+        c_hdr=$C_YELLOW
+        c_bar_active=$C_YELLOW
+        c_colon_active=$C_DIM
+    fi
 
-    # ---- baris-baris digit besar (5 baris) ----
-    local timer_rows=() rowstr
+    # ---- lebar digit & unified rounded card ----
+    local time_w=0
+    for (( i = 0; i < ${#t}; i++ )); do
+        c=${t:i:1}
+        (( i > 0 )) && time_w=$(( time_w + 2 ))
+        if [[ $c == ':' ]]; then
+            time_w=$(( time_w + 2 ))
+        else
+            time_w=$(( time_w + 6 ))
+        fi
+    done
+
+    local card_inner=$(( time_w + 10 ))
+    (( card_inner < 46 )) && card_inner=46
+    if (( card_inner + 2 > cols )); then
+        card_inner=$(( cols - 2 ))
+    fi
+    local card_w=$(( card_inner + 2 ))
+
+    # ---- baris-baris digit besar rounded half-block dengan gradient vertikal ----
+    local timer_rows=() rowstr row_color colon_color
+    if (( paused )); then
+        colon_color=$C_DIM
+    elif (( ANIM_ENABLED && remaining % 2 )); then
+        colon_color="${C_DIM}${c_colon_active}"
+    else
+        colon_color=$c_colon_active
+    fi
     for (( r = 0; r < 5; r++ )); do
+        row_color=${C_DIGIT_GRAD[r]:-$C_DIGITS}
+        if (( paused )); then
+            row_color="${C_DIM}${row_color}"
+        fi
         seg=''
         for (( i = 0; i < ${#t}; i++ )); do
             c=${t:i:1}
-            if (( i > 0 )); then seg+=' '; fi
+            if (( i > 0 )); then seg+='  '; fi
             rowstr=${FONTROWS[${c}_${r}]}
-            if (( ANIM_ENABLED )); then
-                if [[ $c == ':' ]]; then
-                    # colon blink: tiap detik selang-seling ▒/█
-                    if (( remaining % 2 )); then
-                        rowstr=${rowstr//█/▒}
-                    fi
-                elif (( reveal < 100 )); then
-                    # intro dissolve: piksel menyala bertahap
+            if [[ $c == ':' ]]; then
+                seg+="${colon_color}${rowstr}${C_RESET}"
+            else
+                if (( ANIM_ENABLED && reveal < 100 )); then
                     rowstr=$(pixel_anim "$rowstr" "$i" "$r" "$reveal")
                 fi
+                seg+="${row_color}${rowstr}${C_RESET}"
             fi
-            seg+=$rowstr
         done
         timer_rows[r]=$seg
     done
 
-    local time_w=$(( 5 * 5 + 4 ))    # 5 glyph (MM:SS) x 5 kolom + 4 spasi pemisah = 29
-    local inner=$(( time_w + 2 ))
-    local box_w=$(( inner + 2 ))
-    local hbar
-    printf -v hbar '%*s' "$inner" ''
-    hbar=${hbar// /─}
+    # ---- smooth sleek progress bar (presisi setengah sel: ━ / ╸ / ─) ----
+    bar_w=$(( card_inner - 12 ))
+    (( bar_w > BAR_WIDTH )) && bar_w=$BAR_WIDTH
+    (( bar_w < 8 )) && bar_w=8
+    local steps=$(( pct * bar_w * 2 / 100 ))
+    local full=$(( steps / 2 ))
+    local half=$(( steps % 2 ))
+    local rest=$(( bar_w - full - half ))
+    (( rest < 0 )) && rest=0
+    local bar_fill='' bar_rest=''
+    for (( i = 0; i < full; i++ )); do bar_fill+='━'; done
+    (( half )) && bar_fill+='╸'
+    for (( i = 0; i < rest; i++ )); do bar_rest+='─'; done
+    local pct_str
+    printf -v pct_str '%3d%%' "$pct"
+    bar="${c_bar_active}${bar_fill}${C_RESET}${C_DIM}${bar_rest}${C_RESET}  ${c_hdr}${C_BOLD}${pct_str}${C_RESET}"
+    local bar_plain_w=$(( bar_w + 6 ))
 
-    # ---- susun frame ----
-    local top_pad=$(( (rows - 16) / 2 - 1 ))
+    # ---- susun frame (13 baris: card 11 baris + jarak 1 + keyhints 1) ----
+    local top_pad=$(( (rows - 13) / 2 ))
     top_pad=$(( top_pad < 0 ? 0 : top_pad ))
     for (( n = 0; n < top_pad; n++ )); do frame+="${E}[K"$'\n'; done
 
-    # judul mode
-    pad=$(( (cols - ${#label}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
-    printf -v line '%*s%s%s%s%s' "$pad" '' "$C_TITLE" "$C_BOLD" "$label" "$C_RESET"
-    frame+="$line${E}[K"$'\n'
-    frame+="${E}[K"$'\n'
-
-    # kotak border di sekeliling timer
-    pad=$(( (cols - box_w) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
+    pad=$(( (cols - card_w) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
     printf -v pad_s '%*s' "$pad" ''
-    printf -v line '%s%s┌%s┐%s' "$pad_s" "$C_BORDER" "$hbar" "$C_RESET"
+
+    local blank_inner hbar
+    printf -v blank_inner '%*s' "$card_inner" ''
+    hbar=${blank_inner// /─}
+
+    # Border atas card dengan badge mode/pause + indikator siklus
+    local hdr_left hdr_right hdr_left_s hdr_right_s dots_colored='' dch
+    if (( paused )); then
+        hdr_left='❚❚ PAUSED'
+        hdr_left_s="${C_YELLOW}${C_BOLD}❚❚ PAUSED${C_RESET}"
+    else
+        hdr_left="● $label"
+        hdr_left_s="${c_hdr}${C_BOLD}● ${label}${C_RESET}"
+    fi
+    for (( i = 0; i < ${#CYCLE_DOTS}; i++ )); do
+        dch=${CYCLE_DOTS:i:1}
+        if [[ $dch == '●' ]]; then
+            dots_colored+="${c_hdr}●${C_RESET}"
+        else
+            dots_colored+="${C_DIM}○${C_RESET}"
+        fi
+    done
+    hdr_right="Cycle: $CYCLE_DOTS"
+    hdr_right_s="${C_DIM}Cycle: ${C_RESET}${dots_colored}"
+
+    local mid_dashes=$(( card_inner - ${#hdr_left} - ${#hdr_right} - 6 ))
+    (( mid_dashes < 1 )) && mid_dashes=1
+    local mid_bar
+    printf -v mid_bar '%*s' "$mid_dashes" ''
+    mid_bar=${mid_bar// /─}
+
+    printf -v line '%s%s╭─ %s%s %s%s %s%s ─╮%s' \
+        "$pad_s" "$c_card_border" "$hdr_left_s" "$c_card_border" \
+        "$mid_bar" "$C_RESET" "$hdr_right_s" "$c_card_border" "$C_RESET"
     frame+="$line${E}[K"$'\n'
+
+    # Baris kosong atas di dalam card
+    printf -v line '%s%s│%s%s%s│%s' "$pad_s" "$c_card_border" "$C_RESET" "$blank_inner" "$c_card_border" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+
+    # 5 baris digit besar rata tengah di dalam card
+    local lp rp lp_s rp_s
+    lp=$(( (card_inner - time_w) / 2 )); (( lp < 0 )) && lp=0
+    rp=$(( card_inner - time_w - lp )); (( rp < 0 )) && rp=0
+    printf -v lp_s '%*s' "$lp" ''
+    printf -v rp_s '%*s' "$rp" ''
     for (( r = 0; r < 5; r++ )); do
-        printf -v line '%s%s│%s %s%s%s %s│%s' \
-            "$pad_s" "$C_BORDER" "$C_RESET" "$C_DIGITS" "${timer_rows[r]}" "$C_RESET" "$C_BORDER" "$C_RESET"
+        printf -v line '%s%s│%s%s%s%s%s│%s' \
+            "$pad_s" "$c_card_border" "$C_RESET" "$lp_s" "${timer_rows[r]}" "$rp_s" "$c_card_border" "$C_RESET"
         frame+="$line${E}[K"$'\n'
     done
-    printf -v line '%s%s└%s┘%s' "$pad_s" "$C_BORDER" "$hbar" "$C_RESET"
+
+    # Baris kosong pemisah antara digit & progress bar
+    printf -v line '%s%s│%s%s%s│%s' "$pad_s" "$c_card_border" "$C_RESET" "$blank_inner" "$c_card_border" "$C_RESET"
     frame+="$line${E}[K"$'\n'
 
-    frame+="${E}[K"$'\n'
-
-    # progress bar
-    pad=$(( (cols - bar_w) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
-    printf -v line '%*s%s' "$pad" '' "$bar"
+    # Progress bar di dalam card
+    lp=$(( (card_inner - bar_plain_w) / 2 )); (( lp < 0 )) && lp=0
+    rp=$(( card_inner - bar_plain_w - lp )); (( rp < 0 )) && rp=0
+    printf -v lp_s '%*s' "$lp" ''
+    printf -v rp_s '%*s' "$rp" ''
+    printf -v line '%s%s│%s%s%s%s%s│%s' \
+        "$pad_s" "$c_card_border" "$C_RESET" "$lp_s" "$bar" "$rp_s" "$c_card_border" "$C_RESET"
     frame+="$line${E}[K"$'\n'
-    frame+="${E}[K"$'\n'
 
-    # baris info elapsed
+    # Baris info elapsed di dalam card
     local info
-    printf -v info 'Elapsed %02d:%02d of %02d:%02d  ·  %d%%' \
-        $(( elapsed / 60 )) $(( elapsed % 60 )) $(( total / 60 )) $(( total % 60 )) "$pct"
-    pad=$(( (cols - ${#info}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
-    printf -v line '%*s%s%s%s' "$pad" '' "$C_DIM" "$info" "$C_RESET"
+    printf -v info 'Elapsed %02d:%02d of %02d:%02d' \
+        $(( elapsed / 60 )) $(( elapsed % 60 )) $(( total / 60 )) $(( total % 60 ))
+    lp=$(( (card_inner - ${#info}) / 2 )); (( lp < 0 )) && lp=0
+    rp=$(( card_inner - ${#info} - lp )); (( rp < 0 )) && rp=0
+    printf -v lp_s '%*s' "$lp" ''
+    printf -v rp_s '%*s' "$rp" ''
+    printf -v line '%s%s│%s%s%s%s%s%s%s│%s' \
+        "$pad_s" "$c_card_border" "$C_RESET" "$lp_s" "$C_DIM" "$info" "$C_RESET" "$rp_s" "$c_card_border" "$C_RESET"
     frame+="$line${E}[K"$'\n'
 
-    # baris progres siklus: fokus yang selesai di siklus berjalan
-    local cyc="Cycle: $CYCLE_DOTS — long break every $CYCLES_BEFORE_LONG"
-    pad=$(( (cols - ${#cyc}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
-    printf -v line '%*s%s%s%s' "$pad" '' "$C_DIM" "$cyc" "$C_RESET"
+    # Border bawah card
+    printf -v line '%s%s╰%s╯%s' "$pad_s" "$c_card_border" "$hbar" "$C_RESET"
     frame+="$line${E}[K"$'\n'
     frame+="${E}[K"$'\n'
 
-    # baris status / bantuan tombol
+    # Footer keyhints bersih dengan keycap beraksen
     local status plain
     if (( paused )); then
-        plain='PAUSED  ·  [p] resume   [q] quit   [s] skip   [m] menu'
-        status="${C_YELLOW}${C_BOLD}PAUSED${C_RESET}${C_DIM}  ·  [p] resume   [q] quit   [s] skip   [m] menu${C_RESET}"
+        plain='p resume  ·  s skip  ·  m menu  ·  q quit'
+        status="${C_YELLOW}${C_BOLD}p${C_RESET} ${C_WHITE}resume${C_RESET}${C_DIM}  ·  ${C_RESET}${C_KEY}${C_BOLD}s${C_RESET} ${C_DIM}skip  ·  ${C_RESET}${C_KEY}${C_BOLD}m${C_RESET} ${C_DIM}menu  ·  ${C_RESET}${C_KEY}${C_BOLD}q${C_RESET} ${C_DIM}quit${C_RESET}"
     else
-        plain='[q] quit   [p] pause   [s] skip   [m] menu'
-        status="${C_DIM}[q] quit   [p] pause   [s] skip   [m] menu${C_RESET}"
+        plain='p pause  ·  s skip  ·  m menu  ·  q quit'
+        status="${C_KEY}${C_BOLD}p${C_RESET} ${C_DIM}pause  ·  ${C_RESET}${C_KEY}${C_BOLD}s${C_RESET} ${C_DIM}skip  ·  ${C_RESET}${C_KEY}${C_BOLD}m${C_RESET} ${C_DIM}menu  ·  ${C_RESET}${C_KEY}${C_BOLD}q${C_RESET} ${C_DIM}quit${C_RESET}"
     fi
     pad=$(( (cols - ${#plain}) / 2 )); pad=$(( pad < 0 ? 0 : pad ))
     printf -v line '%*s%s' "$pad" '' "$status"
@@ -937,8 +1145,10 @@ show_help_overlay() {
 
 read_key() {
     # Baca satu tombol; hasil ditulis ke variabel bernama $1.
-    # Escape sequence diterjemahkan: arrow keys menjadi UP/DOWN/LEFT/RIGHT.
-    # Return: 1 pada EOF, 0 jika ada tombol (Esc murni menghasilkan string kosong).
+    # Escape sequence diterjemahkan: arrow keys menjadi UP/DOWN/LEFT/RIGHT,
+    # Esc murni (atau escape sequence lain) menjadi ESC (dibedakan dari Enter
+    # yang menghasilkan string kosong '').
+    # Return: 1 pada EOF, 0 jika ada tombol.
     local __var=$1 ch rest
     ch=''
     if ! IFS= read -r -s -n 1 ch; then
@@ -952,7 +1162,7 @@ read_key() {
             '[B') ch='DOWN' ;;
             '[C') ch='RIGHT' ;;
             '[D') ch='LEFT' ;;
-            *)    ch='' ;;
+            *)    ch='ESC' ;;
         esac
     fi
     printf -v "$__var" '%s' "$ch"
@@ -1023,10 +1233,10 @@ show_duration_config_overlay() {
         draw_overlay 'CUSTOMIZE DURATIONS' 'Press [b] to go back'
         
         local key=''
-        if ! IFS= read -r -s -n 1 key; then
+        if ! read_key key; then
             return
         fi
-        
+
         case $key in
             f|F)
                 prompt_for_duration "Focus session" "$fm"
@@ -1051,7 +1261,7 @@ show_duration_config_overlay() {
             a|A)
                 save_duration_config
                 ;;
-            b|B)
+            b|B|ESC)
                 return
                 ;;
         esac
@@ -1113,8 +1323,12 @@ prompt_for_duration() {
             else
                 case $ch in
                     $'\x1b')
-                        DURATION_RESULT=$current
-                        return 0
+                        local rest=''
+                        IFS= read -r -s -n 2 -t 0.05 rest || true
+                        if [[ -z $rest ]]; then
+                            DURATION_RESULT=$current
+                            return 0
+                        fi
                         ;;
                     $'\x7f'|$'\b')
                         input=${input%?}
@@ -1141,14 +1355,57 @@ prompt_for_duration() {
 }
 save_duration_config() {
     mkdir -p "$CONFIG_DIR"
-    cat > "$CONFIG_FILE" <<EOF
+    local tmp
+    tmp=$(mktemp "$CONFIG_DIR/.pomo.conf.XXXXXX") || die "cannot create a temporary config file"
+    if [[ -f $CONFIG_FILE ]]; then
+        local line key seen_f=0 seen_s=0 seen_l=0
+        {
+            while IFS= read -r line || [[ -n $line ]]; do
+                if [[ ! $line =~ ^[[:space:]]*# && $line == *=* ]]; then
+                    key=${line%%=*}
+                    key=${key//$'\t'/}; key=${key// /}
+                    key=${key^^}
+                    case $key in
+                        FOCUS_SECONDS)
+                            if (( ! seen_f )); then
+                                printf 'FOCUS_SECONDS=%s\n' "$FOCUS_SECONDS"
+                                seen_f=1
+                            fi
+                            continue
+                            ;;
+                        SHORT_BREAK_SECONDS)
+                            if (( ! seen_s )); then
+                                printf 'SHORT_BREAK_SECONDS=%s\n' "$SHORT_BREAK_SECONDS"
+                                seen_s=1
+                            fi
+                            continue
+                            ;;
+                        LONG_BREAK_SECONDS)
+                            if (( ! seen_l )); then
+                                printf 'LONG_BREAK_SECONDS=%s\n' "$LONG_BREAK_SECONDS"
+                                seen_l=1
+                            fi
+                            continue
+                            ;;
+                    esac
+                fi
+                printf '%s\n' "$line"
+            done < "$CONFIG_FILE"
+            (( seen_f )) || printf 'FOCUS_SECONDS=%s\n' "$FOCUS_SECONDS"
+            (( seen_s )) || printf 'SHORT_BREAK_SECONDS=%s\n' "$SHORT_BREAK_SECONDS"
+            (( seen_l )) || printf 'LONG_BREAK_SECONDS=%s\n' "$LONG_BREAK_SECONDS"
+        } > "$tmp"
+    else
+        cat > "$tmp" <<EOF
 # Pomodoro timer configuration
 # Custom durations set via UI
 FOCUS_SECONDS=$FOCUS_SECONDS
 SHORT_BREAK_SECONDS=$SHORT_BREAK_SECONDS
 LONG_BREAK_SECONDS=$LONG_BREAK_SECONDS
 EOF
-    
+    fi
+    mv -f "$tmp" "$CONFIG_FILE"
+
     OVERLAY_LINES=(
         "Configuration saved!"
         "File: $CONFIG_FILE"
@@ -1237,7 +1494,7 @@ open_menu() {
                         cycle_theme
                         # Terapkan ulang warna mode agar menu (dan timer
                         # setelahnya) langsung memakai tema yang baru.
-                        set_mode_colors "$CURRENT_MODE"
+                        set_mode_colors "${CURRENT_MODE:-focus}"
                         ;;
                 esac
                 ;;
@@ -1250,8 +1507,8 @@ open_menu() {
             c|C)   cycle_theme
                    # Terapkan ulang warna mode agar menu (dan timer
                    # setelahnya) langsung memakai tema yang baru.
-                   set_mode_colors "$CURRENT_MODE" ;;
-            b|B|m|M) MENU_RESULT='back' ;;
+                   set_mode_colors "${CURRENT_MODE:-focus}" ;;
+            b|B|m|M|ESC) MENU_RESULT='back' ;;
             q|Q)   MENU_RESULT='quit' ;;
         esac
         if [[ -n $MENU_RESULT ]]; then
@@ -1303,6 +1560,9 @@ run_timer() {
             frozen=$remaining
         fi
 
+        if (( RESIZED )); then
+            update_term_size
+        fi
         # Gambar ulang hanya saat ada perubahan (detik/pause/resize)
         local frame_key="$remaining-$paused-${TERM_COLS}x${TERM_LINES}"
         if [[ $frame_key != "$last_frame" || $RESIZED == 1 ]]; then
@@ -1531,9 +1791,9 @@ run_cycle() {
             msg="$label skipped — nothing was logged."
         fi
 
-        # Tentukan mode berikutnya: fokus -> break (panjang tiap ke-4), break -> fokus
+        # Tentukan mode berikutnya: fokus -> break (panjang tiap ke-4 yang selesai), break -> fokus
         if [[ $mode == focus ]]; then
-            if (( focus_done % CYCLES_BEFORE_LONG == 0 )); then
+            if (( completed && focus_done > 0 && focus_done % CYCLES_BEFORE_LONG == 0 )); then
                 next=long_break
             else
                 next=short_break
@@ -1556,7 +1816,6 @@ run_cycle() {
         if [[ -n ${PROMPT_NEXT_MODE:-} ]]; then
             next=$PROMPT_NEXT_MODE
             PROMPT_NEXT_MODE=''
-            next_label=$(mode_label "$next")
         fi
         mode=$next
     done
@@ -1566,35 +1825,37 @@ start_session() {
     # $1 mode awal
     validate_durations
     init_terminal
-    
+
     # Show confirmation in UI for focus mode
-    if [[ "$1" == "focus" && "${2:-}" == "confirm" ]]; then
-        local label=$(mode_label "$1")
-        local duration=$(mode_duration "$1")
-        local mins=$(( duration / 60 ))
-        
+    if [[ $1 == "focus" && ${2:-} == "confirm" ]]; then
+        local label duration mins
+        label=$(mode_label "$1")
+        duration=$(mode_duration "$1")
+        mins=$(( duration / 60 ))
+        set_mode_colors "$1"
+
         draw_message "START CONFIRMATION" "Start $label ($mins min)?" "Press [Enter] to start  ·  [q] to quit"
-        
+
         local ans=''
         while :; do
             ans=''
-            if ! IFS= read -r -s -n 1 ans; then
+            if ! read_key ans; then
                 cleanup
                 exit 0
             fi
             case $ans in
-                '') 
+                '')
                     break  # Enter ditekan - lanjutkan
                     ;;
-                q|Q)
+                q|Q|ESC)
                     cleanup
-                    printf "Sesi fokus belum dimulai.\n"
+                    printf 'Focus session cancelled.\n'
                     exit 0
                     ;;
             esac
         done
     fi
-    
+
     run_cycle "$1"
 }
 
@@ -1676,7 +1937,7 @@ show_stats() {
             "$C_CYAN" "$day" "$C_RESET" \
             "$C_GREEN" "${FOCUS_COUNT[$day]:-0}" "$C_RESET" \
             "$C_GREEN" "$mins" "$C_RESET" \
-            "$C_BAR" "$bar" "$C_RESET"
+            "${C_BAR:-$C_GREEN}" "$bar" "$C_RESET"
     done
 
     printf '\n'
@@ -1803,7 +2064,7 @@ self_update() {
             "Re-run with sudo, or reinstall into a directory you own (see README)."
     fi
 
-    tmp=$(mktemp) || die "cannot create a temporary file"
+    tmp=$(mktemp "$(dirname "$self")/.pomo-update.XXXXXX" 2>/dev/null || mktemp) || die "cannot create a temporary file"
 
     if command -v curl >/dev/null 2>&1; then
         if ! curl -fsSL "$POMO_RAW_URL" -o "$tmp"; then
@@ -1844,32 +2105,42 @@ self_update() {
 # ================================== MAIN ====================================
 
 main() {
-    load_theme
-    load_config
     local cmd=${1:-}
     case $cmd in
         '')
+            load_theme
+            load_config
             start_session focus confirm
             ;;
         start)
+            load_theme
+            load_config
             start_session focus
             ;;
         -w|--short)
+            load_theme
+            load_config
             start_session short_break
             ;;
         -W|--long)
+            load_theme
+            load_config
             start_session long_break
             ;;
         resume)
+            load_theme
+            load_config
             resume_session
             ;;
         stats)
+            load_theme
             show_stats
             ;;
         status)
             show_status "${2:-}"
             ;;
         config)
+            load_config
             show_config
             ;;
         update)
@@ -1884,6 +2155,7 @@ main() {
                 save_theme
                 printf 'Theme set to %s (saved in %s).\n' "$THEME_NAME" "$THEME_FILE"
             else
+                load_theme
                 show_theme
             fi
             ;;

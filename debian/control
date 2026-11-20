@@ -9,7 +9,8 @@ Homepage: https://github.com/Yapidev/pomo
 Package: pomo
 Maintainer: Yapidev <yapidev@users.noreply.github.com>
 Architecture: all
-Depends: bash (>= 4.0), libnotify-bin, ncurses-bin
+Depends: bash (>= 4.0), ncurses-bin
+Recommends: libnotify-bin, pulseaudio-utils | pipewire-pulse, sound-theme-freedesktop
 Description: Eye-catching pomodoro timer TUI in pure Bash
  pomo is a terminal-based pomodoro timer with a large block-character
  countdown, a progress bar and per-mode colors. It supports pause/skip/quit

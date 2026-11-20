@@ -1,3 +1,23 @@
+pomo (1.8.0-1) unstable; urgency=medium
+
+  * Redesigned timer TUI: rounded half-block digits (▄/▀/█) with adaptive
+    5-row vertical gradient (terminal ANSI palette for default, truecolor/256
+    per named theme), unified rounded card with header badge and cycle dots,
+    smooth half-cell progress bar (━/╸/─), keycap footer, and yellow PAUSED
+    card feedback.
+  * Fix: saving durations from the UI now preserves NOTIFY_CMD, audio keys,
+    and comments in pomo.conf instead of overwriting the file.
+  * Fix: arrow keys in duration overlay no longer trigger save/back; Esc is
+    distinct from Enter across menu and between-session prompts.
+  * Fix: skipping the first focus session offers a short break instead of a
+    long break; SIGWINCH now refreshes terminal dimensions; 100+ minute
+    sessions align cleanly; "pomo stats" bar chart is colored; corrupted
+    theme/config no longer blocks --help, --version, or "pomo theme <name>".
+  * Packaging & CI: add ShellCheck to CI, move libnotify-bin to Recommends
+    in debian/control, and remove obsolete patch_pomo_features.sh.
+
+ -- Yapidev <yapidev@users.noreply.github.com>  Fri, 20 Nov 2026 10:10:00 +0700
+
 pomo (1.7.1-1) unstable; urgency=medium
 
   * Fix: arrow-key + Enter in the menu now works on every item, not just

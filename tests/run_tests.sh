@@ -10,6 +10,7 @@
 # Jalankan dari mana saja: tests/run_tests.sh
 
 # shellcheck source=/dev/null
+# shellcheck disable=SC2034  # unit test mengatur global yang dipakai fungsi pomo yang di-source
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -62,7 +63,8 @@ chmod +x "$TMP/fakebin/notify-send"
 # --------------------------------------------------------------- version
 out=$(bash "$POMO" --version 2>&1)
 assert_contains '--version mencetak nama dan versi' "$out" 'pomo '
-assert_contains '--version cocok dengan changelog 1.7.1' "$out" 'pomo 1.7.1'
+changelog_ver=$(sed -n '1s/^pomo (\([^)-]*\)[^)]*).*/\1/p' "$ROOT/debian/changelog")
+assert_eq '--version cocok dengan versi teratas debian/changelog' "$out" "pomo $changelog_ver"
 
 # ------------------------------------------------------------------ help
 out=$(bash "$POMO" --help 2>&1)
@@ -137,9 +139,13 @@ assert_contains 'theme tidak dikenal: pesan error' "$out" "unknown theme: 'bogus
 assert_contains 'theme tidak dikenal: daftar tema disebut' "$out" 'Available themes:'
 
 printf 'ga-fdak\n' > "$XDG_CONFIG_HOME/pomo/theme"
-out=$(bash "$POMO" --version 2>&1); rc=$?
+out=$(bash "$POMO" theme 2>&1); rc=$?
 assert_eq 'file config tema rusak: exit code 1' "$rc" '1'
 assert_contains 'file config tema rusak: pesan error' "$out" "unknown theme: 'ga-fdak'"
+out=$(bash "$POMO" --version 2>&1); rc=$?
+assert_eq 'file config tema rusak: --version tetap jalan' "$rc" '0'
+out=$(bash "$POMO" theme default 2>&1); rc=$?
+assert_eq 'file config tema rusak: pomo theme default bisa memulihkan' "$rc" '0'
 rm -f "$XDG_CONFIG_HOME/pomo/theme"
 
 # --------------------------------------------- unit: apply_theme + cycle_theme
@@ -206,19 +212,22 @@ assert_eq 'durasi non-numerik ditolak: exit code 1' "$rc" '1'
 
 # ------------------------------------------------------------ config file
 mkdir -p "$XDG_CONFIG_HOME/pomo"
-printf '# komentar penuh\nfocus_seconds=1200   # 20 menit\nSHORT_BREAK_SECONDS=240\nUNKNOWN_KEY=x\n' \
+printf '# komentar penuh\n# FOCUS_SECONDS=999\n   # SHORT_BREAK_SECONDS=999\nfocus_seconds=1200\t# 20 menit\nSHORT_BREAK_SECONDS=240\nUNKNOWN_KEY=x\n' \
     > "$XDG_CONFIG_HOME/pomo/pomo.conf"
 out=$(bash "$POMO" config 2>&1)
 assert_contains 'config: file terdeteksi aktif' "$out" '(active)'
-assert_contains 'config: kunci lowercase + komentar inline dibaca' "$out" 'Focus         : 1200 s (20 min)'
+assert_contains 'config: kunci lowercase + komentar inline & tab dibaca' "$out" 'Focus         : 1200 s (20 min)'
 assert_contains 'config: kunci kedua dibaca' "$out" 'Short break   : 240 s (4 min)'
 assert_contains 'config: kunci tak dikenal diabaikan' "$out" 'Long break    : 900 s (15 min)'
+assert_contains 'config: menampilkan pengaturan audio' "$out" 'Focus sound :'
 out=$(POMO_FOCUS_SECONDS=333 bash "$POMO" config 2>&1)
 assert_contains 'config: env meng-override file' "$out" 'Focus         : 333 s (5 min)'
 printf 'FOCUS_SECONDS=abc\n' > "$XDG_CONFIG_HOME/pomo/pomo.conf"
-out=$(bash "$POMO" --version 2>&1); rc=$?
+out=$(bash "$POMO" config 2>&1); rc=$?
 assert_eq 'config: nilai rusak exit code 1' "$rc" '1'
 assert_contains 'config: nilai rusak pesan jelas' "$out" 'FOCUS_SECONDS must be a positive integer'
+out=$(bash "$POMO" --help 2>&1); rc=$?
+assert_eq 'config rusak: --help tetap jalan' "$rc" '0'
 rm -f "$XDG_CONFIG_HOME/pomo/pomo.conf"
 
 # ------------------------------------------------------ status: idle tanpa sesi
@@ -313,6 +322,7 @@ fi
 
 # ------------------------------------------------------ notify hook (env)
 export XDG_DATA_HOME="$TMP/data-notify"
+# shellcheck disable=SC2016
 out=$(PATH="$TMP/fakebin:$PATH" POMO_FOCUS_SECONDS=2 POMO_ANIMATION=off \
     POMO_NOTIFY_CMD='printf HOOK:%s:%s "$1" "$2"' bash "$POMO" start </dev/null 2>&1)
 assert_contains 'notify hook: dipanggil dengan judul' "$out" 'HOOK:Focus session complete:'
@@ -468,14 +478,17 @@ unit_rc=0
     [[ $k == DOWN ]]
     k=$(printf '\033[A' | { read_key k; printf '%s' "$k"; })
     [[ $k == UP ]]
-    # Esc murni -> string kosong (bukan arrow, tidak bocor ke pembacaan berikutnya)
-    k=$(printf '\033' | { read_key k; printf '%s' "$k"; })
+    # Enter -> string kosong
+    k=$(printf '\n' | { read_key k; printf '%s' "$k"; })
     [[ -z $k ]]
+    # Esc murni -> ESC (dibedakan dari Enter, tidak bocor ke pembacaan berikutnya)
+    k=$(printf '\033' | { read_key k; printf '%s' "$k"; })
+    [[ $k == ESC ]]
 )
 unit_rc=$?
-assert_eq 'unit: read_key (EOF, tombol biasa, arrow, Esc)' "$unit_rc" '0'
+assert_eq 'unit: read_key (EOF, tombol biasa, arrow, Enter, Esc)' "$unit_rc" '0'
 
-# ------------------------------------------ unit: draw_ui (baris siklus + anti-flicker)
+# ------------------------------------------ unit: draw_ui (rounded card, siklus, gradient, anti-flicker)
 unit_rc=0
 (
     set -e
@@ -487,8 +500,17 @@ unit_rc=0
     TERM_COLS=80 TERM_LINES=24
     CYCLE_DOTS='●●○○'
     out=$(draw_ui 754 1500 'FOCUS SESSION' 0)
-    [[ $out == *'Cycle: ●●○○'* ]]
-    [[ $out == *'Elapsed 12:26 of 25:00'* ]]
+    plain=$(sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g' <<< "$out")
+    [[ $plain == *'╭─ ● FOCUS SESSION'* ]]
+    [[ $plain == *'Cycle: ●●○○ ─╮'* ]]
+    [[ $plain == *'Elapsed 12:26 of 25:00'* ]]
+    [[ $plain == *'━'* && $plain == *'╰'* && $plain == *'╯'* ]]
+    [[ $plain == *'p pause  ·  s skip  ·  m menu  ·  q quit'* ]]
+    # status PAUSED: header berubah menjadi ❚❚ PAUSED + hint resume
+    out_p=$(draw_ui 754 1500 'FOCUS SESSION' 1)
+    plain_p=$(sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g' <<< "$out_p")
+    [[ $plain_p == *'╭─ ❚❚ PAUSED'* ]]
+    [[ $plain_p == *'p resume'* ]]
     # terminal terlalu kecil: pesan muncul TANPA clear penuh (anti-flicker)
     TERM_COLS=30 TERM_LINES=10
     out=$(draw_ui 754 1500 'FOCUS SESSION' 0)
@@ -496,7 +518,7 @@ unit_rc=0
     [[ $out != *$'\033[2J'* ]]
 )
 unit_rc=$?
-assert_eq 'unit: draw_ui menampilkan indikator siklus & anti-flicker terminal kecil' "$unit_rc" '0'
+assert_eq 'unit: draw_ui (rounded card, siklus, paused, anti-flicker terminal kecil)' "$unit_rc" '0'
 
 # ------------------------------------------ unit: open_menu (tombol, arrow, penanda aktif)
 unit_rc=0
@@ -695,6 +717,192 @@ out=$(bash "$POMO" --help 2>&1)
 assert_contains '--help: blok Between sessions' "$out" 'Between sessions:'
 assert_contains '--help: menu dengan navigasi arrow' "$out" 'navigate with'
 assert_contains '--help: quit dengan konfirmasi' "$out" 'Quit (asks for confirmation)'
+
+# ------------------------------------------ regresi: save_duration_config pertahankan config lain
+unit_rc=0
+(
+    set -e
+    export XDG_CONFIG_HOME="$TMP/cfg-preserve"
+    mkdir -p "$XDG_CONFIG_HOME/pomo"
+    cat > "$XDG_CONFIG_HOME/pomo/pomo.conf" <<'EOF'
+# custom user comment
+NOTIFY_CMD=my-notify "$1" "$2"
+FOCUS_SOUND=/custom/focus.oga
+BREAK_SOUND=/custom/break.oga
+FOCUS_SECONDS=1500
+EOF
+    source "$POMO"
+    FOCUS_SECONDS=1800
+    SHORT_BREAK_SECONDS=360
+    LONG_BREAK_SECONDS=1200
+    read_key() { return 0; }
+    save_duration_config >/dev/null
+    cfg=$(<"$CONFIG_FILE")
+    [[ $cfg == *'# custom user comment'* ]]
+    # shellcheck disable=SC2016
+    [[ $cfg == *'NOTIFY_CMD=my-notify "$1" "$2"'* ]]
+    [[ $cfg == *'FOCUS_SOUND=/custom/focus.oga'* ]]
+    [[ $cfg == *'BREAK_SOUND=/custom/break.oga'* ]]
+    [[ $cfg == *'FOCUS_SECONDS=1800'* ]]
+    [[ $cfg == *'SHORT_BREAK_SECONDS=360'* ]]
+    [[ $cfg == *'LONG_BREAK_SECONDS=1200'* ]]
+    [[ $cfg != *'FOCUS_SECONDS=1500'* ]]
+)
+unit_rc=$?
+assert_eq 'regresi: save_duration_config mempertahankan NOTIFY_CMD & audio di pomo.conf' "$unit_rc" '0'
+
+# ------------------------------------------ regresi: duration overlay aman dari arrow keys & Esc
+unit_rc=0
+(
+    set -e
+    export XDG_CONFIG_HOME="$TMP/cfg-arrows"
+    mkdir -p "$XDG_CONFIG_HOME/pomo"
+    source "$POMO"
+    COLOR_ENABLED=0
+    TERM_COLS=80 TERM_LINES=30
+    # Panah atas (\033[A) tidak boleh memicu [a] save_duration_config;
+    # Panah bawah (\033[B) tidak boleh memicu [b] keluar sebelum 'r' dijalankan;
+    # Lalu 'r' reset dan Esc menutup overlay.
+    FOCUS_SECONDS=1800
+    show_duration_config_overlay >/dev/null < <(printf '\033[A\033[Br\033')
+    [[ ! -f $CONFIG_FILE ]]
+    [[ $FOCUS_SECONDS == 1500 ]]
+)
+unit_rc=$?
+assert_eq 'regresi: duration overlay mengabaikan arrow keys (tidak salah trigger a/b)' "$unit_rc" '0'
+
+# ------------------------------------------ regresi: Esc di menu & prompt_continue ≠ Enter
+unit_rc=0
+(
+    set -e
+    source "$POMO"
+    COLOR_ENABLED=0
+    INTERACTIVE=1
+    TERM_COLS=80 TERM_LINES=30
+    CURRENT_MODE=focus
+    # Geser kursor ke focus (2x DOWN dari idx 9), lalu Esc -> harus back (bukan focus)
+    MENU_RESULT=''
+    open_menu >/dev/null < <(printf '\033[B\033[B\033')
+    [[ $MENU_RESULT == back ]]
+    # Di prompt_continue: Esc tidak boleh start sesi; diikuti 'q' harus quit (rc 1)
+    rc=0; prompt_continue 'T' 'm' 'NEXT' >/dev/null < <(printf '\033q') || rc=$?
+    [[ $rc == 1 ]]
+)
+unit_rc=$?
+assert_eq 'regresi: Esc di menu -> back, Esc di prompt_continue tidak start sesi' "$unit_rc" '0'
+
+# ------------------------------------------ regresi: skip fokus pertama -> short break (bukan long)
+unit_rc=0
+(
+    set -e
+    export XDG_DATA_HOME="$TMP/data-skip"
+    export XDG_RUNTIME_DIR="$TMP/run-skip"
+    mkdir -p "$XDG_RUNTIME_DIR"
+    export POMO_FOCUS_SECONDS=10 POMO_SHORT_BREAK_SECONDS=5 POMO_LONG_BREAK_SECONDS=15
+    export POMO_ANIMATION=off POMO_NOTIFY_CMD=true
+    source "$POMO"
+    COLOR_ENABLED=0
+    INTERACTIVE=1
+    TERM_COLS=80 TERM_LINES=24
+    out_file="$TMP/skip.out"
+    # Skip fokus pertama ('s'), lalu 'q' di layar konfirmasi antar-sesi
+    rc=0; run_cycle focus >"$out_file" 2>&1 < <(printf 'sq') || rc=$?
+    [[ $rc == 0 ]]
+    out=$(<"$out_file")
+    [[ $out == *'SHORT BREAK'* ]]
+    [[ $out != *'LONG BREAK'* ]]
+)
+unit_rc=$?
+assert_eq 'regresi: skip sesi fokus pertama menawarkan SHORT BREAK (bukan LONG BREAK)' "$unit_rc" '0'
+
+# ------------------------------------------ regresi: draw_ui >= 100 menit kotak tetap sejajar
+unit_rc=0
+(
+    set -e
+    source "$POMO"
+    COLOR_ENABLED=0
+    ANIM_ENABLED=0
+    TERM_COLS=80 TERM_LINES=24
+    out=$(draw_ui 6000 7200 'FOCUS SESSION' 0)
+    # 6 glyph ("100:00"): 5*6 + 2 + 5*2 = 42 kolom + 10 padding = 52 inner -> 52 garis '─'
+    expected_bar='╰────────────────────────────────────────────────────╯'
+    [[ $out == *"$expected_bar"* ]]
+)
+unit_rc=$?
+assert_eq 'regresi: draw_ui dengan durasi >= 100 menit lebar rounded card sesuai 6 glyph' "$unit_rc" '0'
+
+# ------------------------------------------ unit: font rounded half-block + gradient adaptif
+unit_rc=0
+(
+    set -e
+    source "$POMO"
+    # pixel_anim menangani ▄ dan ▀ selain █
+    out=$(pixel_anim '▄████▄' 0 0 0)
+    [[ $out == '      ' ]]
+    out=$(pixel_anim '▄████▄' 0 0 100)
+    [[ $out == '▄████▄' ]]
+    out=$(pixel_anim '▀████▀' 0 0 100)
+    [[ $out == '▀████▀' ]]
+
+    # gradient adaptif: default memakai ANSI palette, dracula 256 & truecolor, mono tanpa warna
+    COLOR_ENABLED=1
+    TRUECOLOR=0
+    apply_theme default
+    set_mode_colors focus
+    [[ ${#C_DIGIT_GRAD[@]} == 5 ]]
+    [[ ${C_DIGIT_GRAD[0]} == *"$C_CYAN"* && ${C_DIGIT_GRAD[4]} == $'\033[32m' ]]
+
+    apply_theme dracula
+    set_mode_colors focus
+    [[ ${C_DIGIT_GRAD[0]} == $'\033[38;5;117m' ]]
+
+    TRUECOLOR=1
+    set_mode_colors focus
+    [[ ${C_DIGIT_GRAD[0]} == $'\033[38;2;139;233;253m' ]]
+
+    apply_theme mono
+    set_mode_colors focus
+    [[ -z ${C_DIGIT_GRAD[2]} ]]
+)
+unit_rc=$?
+assert_eq 'unit: rounded half-block pixel_anim + adaptive vertical gradient (ANSI/256/RGB/mono)' "$unit_rc" '0'
+
+# ------------------------------------------ regresi: run_timer memanggil update_term_size saat RESIZED=1
+unit_rc=0
+(
+    set -e
+    export XDG_RUNTIME_DIR="$TMP/run-resize"
+    mkdir -p "$XDG_RUNTIME_DIR"
+    source "$POMO"
+    COLOR_ENABLED=0
+    INTERACTIVE=1
+    ANIM_ENABLED=0
+    TERM_COLS=80 TERM_LINES=24
+    resized_called=0
+    update_term_size() { resized_called=1; TERM_COLS=90; TERM_LINES=30; }
+    RESIZED=1
+    rc=0; run_timer 5 'FOCUS SESSION' >/dev/null 2>&1 < <(printf 's') || rc=$?
+    [[ $rc == 2 && $resized_called == 1 && $TERM_COLS == 90 ]]
+)
+unit_rc=$?
+assert_eq 'regresi: run_timer memanggil update_term_size saat RESIZED=1' "$unit_rc" '0'
+
+# ------------------------------------------ regresi: show_stats mewarnai bar chart
+unit_rc=0
+(
+    set -e
+    export XDG_DATA_HOME="$TMP/data-stats-color"
+    mkdir -p "$XDG_DATA_HOME/pomo"
+    today=$(date +%F)
+    printf '%s|focus|1500\n' "$today" > "$XDG_DATA_HOME/pomo/history.log"
+    source "$POMO"
+    COLOR_ENABLED=1
+    apply_theme default
+    out=$(show_stats)
+    [[ $out == *"${C_GREEN}▓▓"* ]]
+)
+unit_rc=$?
+assert_eq 'regresi: show_stats mewarnai grafik bar saat COLOR_ENABLED=1' "$unit_rc" '0'
 
 # --------------------------------------------------------------- ringkasan
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

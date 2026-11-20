@@ -24,6 +24,9 @@ jobs:
           bash -n tests/run_tests.sh
           bash -n build-deb.sh
 
+      - name: Lint with ShellCheck
+        run: shellcheck pomo tests/run_tests.sh build-deb.sh
+
       - name: Run test suite
         run: bash tests/run_tests.sh
 
