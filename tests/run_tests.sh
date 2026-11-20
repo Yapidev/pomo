@@ -904,6 +904,160 @@ unit_rc=0
 unit_rc=$?
 assert_eq 'regresi: show_stats mewarnai grafik bar saat COLOR_ENABLED=1' "$unit_rc" '0'
 
+# ------------------------------------------ unit: activity tracking (normalize, sample, idle, recap)
+unit_rc=0
+(
+    set -e
+    export XDG_DATA_HOME="$TMP/data-activity"
+    source "$POMO"
+
+    # Normalisasi nama aplikasi
+    [[ $(normalize_app_name 'com.mitchellh.ghostty') == ghostty ]]
+    [[ $(normalize_app_name 'org.mozilla.firefox.desktop') == firefox ]]
+    [[ $(normalize_app_name 'Code-OSS') == code ]]
+    [[ $(normalize_app_name 'google-chrome-stable') == chrome ]]
+    [[ $(normalize_app_name 'bad|app,name=1') == badappname1 ]]
+    [[ $(normalize_app_name '') == unknown ]]
+
+    # Sampling, perpindahan app, dan deteksi idle berbasis signature
+    IDLE_THRESHOLD_SECONDS=60
+    activity_reset
+    activity_record_sample 'Code-OSS' 'main.sh' '100, 200' -1 2 1000
+    activity_record_sample 'Code-OSS' 'main.sh' '105, 200' -1 2 1002
+    activity_record_sample 'org.mozilla.firefox' 'Docs' '120, 220' -1 2 1004
+    # Tetap di firefox, title & cursor sama > 60s -> dihitung idle
+    activity_record_sample 'org.mozilla.firefox' 'Docs' '120, 220' -1 2 1070
+    [[ $ACT_SAMPLES == 4 ]]
+    [[ $ACT_SWITCHES == 1 ]]
+    [[ ${ACT_APP_SECS[code]} == 4 ]]
+    [[ ${ACT_APP_SECS[firefox]} == 4 ]]
+    [[ $ACT_ACTIVE_SECS == 6 ]]
+    [[ $ACT_IDLE_SECS == 2 ]]
+
+    # Deteksi idle berbasis idle_ms (mis. xprintidle)
+    activity_reset
+    activity_record_sample 'ghostty' 'bash' '' 5000 2 2000
+    activity_record_sample 'ghostty' 'bash' '' 75000 2 2002
+    [[ $ACT_ACTIVE_SECS == 2 && $ACT_IDLE_SECS == 2 ]]
+
+    # log_activity + sanitasi task + show_recap (today & last)
+    SESSION_TASK='Kerjakan | Bab 3'
+    activity_reset
+    activity_record_sample 'Code-OSS' 'pomo' '1,1' -1 120 3000
+    activity_record_sample 'firefox' 'Docs' '2,2' -1 60 3002
+    log_activity 180
+    [[ -f $ACTIVITY_FILE ]]
+    out_today=$(show_recap today)
+    [[ $out_today == *'Focus Activity Recap'* ]]
+    [[ $out_today == *'[Kerjakan   Bab 3]'* ]]
+    [[ $out_today == *'code'* && $out_today == *'firefox'* ]]
+    out_last=$(show_recap last)
+    [[ $out_last == *'Last Focus Recap'* ]]
+    [[ $out_last == *'100% active'* && $out_last == *'1 app switches'* ]]
+
+    # show_stats ikut menampilkan Top Apps Today bila activity.log ada
+    log_session focus 180
+    out_stats=$(show_stats)
+    [[ $out_stats == *'Top Apps Today'* ]]
+    [[ $out_stats == *'code'* ]]
+
+    # draw_focus_recap menampilkan rounded recap card dengan app bars, task, & indikator Idle
+    TERM_COLS=80 TERM_LINES=24
+    ACT_IDLE_SECS=20
+    recap_ui=$(draw_focus_recap 200 'SHORT BREAK' | sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g')
+    [[ $recap_ui == *'╭─ ✓ FOCUS COMPLETE'* ]]
+    [[ $recap_ui == *'Kerjakan   Bab 3'* ]]
+    [[ $recap_ui == *'Activity : 90% active'* ]]
+    [[ $recap_ui == *'Idle     : 10% idle (20s)'* ]]
+    [[ $recap_ui == *'Apps used:'* ]]
+    [[ $recap_ui == *'code'* && $recap_ui == *'━'* ]]
+    [[ $recap_ui == *'╰'* && $recap_ui == *'╯'* ]]
+
+    # draw_ui menampilkan indikator tracking saat focus & backend aktif
+    CURRENT_MODE=focus
+    TRACKER_BACKEND=hyprland
+    ANIM_ENABLED=0
+    ui_tr=$(draw_ui 600 1500 'FOCUS SESSION' 0 | sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g')
+    [[ $ui_tr == *'·  tracking'* ]]
+    TRACKER_BACKEND=off
+    ui_no=$(draw_ui 600 1500 'FOCUS SESSION' 0 | sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g')
+    [[ $ui_no != *'tracking'* ]]
+)
+unit_rc=$?
+assert_eq 'unit: activity tracking, normalisasi, idle, recap card, & Top Apps Today' "$unit_rc" '0'
+
+# ------------------------------------------ CLI: recap, -t/--task, & POMO_TRACKING=off
+export XDG_DATA_HOME="$TMP/data-recap-empty"
+out=$(bash "$POMO" recap 2>&1); rc=$?
+assert_eq 'recap tanpa data: exit code 0' "$rc" '0'
+assert_contains 'recap tanpa data: pesan ramah' "$out" 'No focus activity recaps recorded yet'
+
+out=$(bash "$POMO" recap bogus 2>&1); rc=$?
+assert_eq 'recap opsi tidak dikenal: exit code 1' "$rc" '1'
+
+out=$(bash "$POMO" -t 2>&1); rc=$?
+assert_eq '-t tanpa argumen: exit code 1' "$rc" '1'
+assert_contains '-t tanpa argumen: pesan error jelas' "$out" 'requires a task description'
+
+out=$(POMO_TRACKING=off bash "$POMO" config 2>&1)
+assert_contains 'config: POMO_TRACKING=off ditampilkan' "$out" 'Tracking    : off'
+
+out=$(bash "$POMO" --help 2>&1)
+assert_contains '--help menyebut subcommand recap' "$out" 'pomo recap'
+assert_contains '--help menyebut opsi -t task' "$out" '-t "task"'
+
+# ------------------------------------------ unit: swayidle Wayland idle watcher & fallback
+unit_rc=0
+(
+    set -e
+    export XDG_RUNTIME_DIR="$TMP/run-idle"
+    mkdir -p "$XDG_RUNTIME_DIR" "$TMP/swaybin"
+    cat > "$TMP/swaybin/hyprctl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    cat > "$TMP/swaybin/swayidle" <<'EOF'
+#!/usr/bin/env bash
+sleep 30 &
+wait $!
+EOF
+    chmod +x "$TMP/swaybin/hyprctl" "$TMP/swaybin/swayidle"
+
+    PATH="$TMP/swaybin:/usr/bin:/bin"
+    HYPRLAND_INSTANCE_SIGNATURE='test-sig'
+    source "$POMO"
+    detect_tracker_backend
+    [[ $TRACKER_BACKEND == hyprland ]]
+    idle_watcher_supported
+
+    start_idle_watcher
+    [[ -n $IDLE_WATCHER_PID && -f $IDLE_STATE_FILE ]]
+    [[ $(<"$IDLE_STATE_FILE") == 0 ]]
+    kill -0 "$IDLE_WATCHER_PID" 2>/dev/null
+
+    # State 0 -> active (PROBE_IDLE_MS=0)
+    PROBE_IDLE_MS=-1
+    read_wayland_idle_ms
+    [[ $PROBE_IDLE_MS == 0 ]]
+
+    # State 1 -> idle (>= threshold * 1000)
+    printf '1\n' > "$IDLE_STATE_FILE"
+    read_wayland_idle_ms
+    [[ $PROBE_IDLE_MS == $(( IDLE_THRESHOLD_SECONDS * 1000 )) ]]
+
+    # Stop watcher -> proses & file state dibersihkan, fallback return 1
+    state_path=$IDLE_STATE_FILE
+    stop_idle_watcher
+    [[ -z $IDLE_WATCHER_PID && -z $IDLE_STATE_FILE && ! -e $state_path ]]
+    read_wayland_idle_ms && exit 1
+
+    # show_config mendeteksi swayidle (keyboard+pointer)
+    cfg_out=$(show_config)
+    [[ $cfg_out == *'swayidle (keyboard+pointer)'* ]]
+)
+unit_rc=$?
+assert_eq 'unit: swayidle Wayland keyboard+pointer idle watcher & cleanup' "$unit_rc" '0'
+
 # --------------------------------------------------------------- ringkasan
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

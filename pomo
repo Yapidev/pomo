@@ -33,6 +33,7 @@ readonly POMO_RAW_URL="https://raw.githubusercontent.com/Yapidev/pomo/main/pomo"
 # Direktori data mengikuti XDG; fallback ke ~/.local/share
 readonly DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pomo"
 readonly HISTORY_FILE="$DATA_DIR/history.log"
+readonly ACTIVITY_FILE="$DATA_DIR/activity.log"
 
 # File status sesi aktif: ditulis oleh timer yang sedang berjalan, dibaca
 # oleh "pomo status" (untuk statusbar tmux/waybar). Di XDG_RUNTIME_DIR
@@ -60,6 +61,16 @@ SPEAKER_CMD="${POMO_SPEAKER_CMD:-}"
 SPEAKER_SOUND="${POMO_SPEAKER_SOUND:-/usr/share/sounds/freedesktop/stereo/complete.oga}"
 FOCUS_SOUND="${POMO_FOCUS_SOUND:-}"
 BREAK_SOUND="${POMO_BREAK_SOUND:-/usr/share/sounds/freedesktop/stereo/bell.oga}"
+
+# Pelacakan aktivitas fokus (nama aplikasi aktif, app switches, estimasi active/idle).
+# Tanpa keylogger dan tanpa root; otomatis fallback jika tidak ada backend desktop.
+ACTIVITY_TRACKING="${POMO_TRACKING:-on}"
+IDLE_THRESHOLD_SECONDS="${POMO_IDLE_THRESHOLD:-60}"
+readonly TRACK_INTERVAL=2
+TRACKER_BACKEND='none'
+SESSION_TASK=''
+IDLE_WATCHER_PID=''
+IDLE_STATE_FILE=''
 
 # Jumlah sesi fokus sebelum berhak dapat break panjang
 readonly CYCLES_BEFORE_LONG=4
@@ -373,12 +384,30 @@ load_config() {
                 value=${value%"${value##*[![:space:]]}"}
                 [[ -z ${POMO_BREAK_SOUND:-} ]] && BREAK_SOUND=$value
                 ;;
+            ACTIVITY_TRACKING)
+                value=${raw%%#*}
+                value=${value//$'\t'/}; value=${value// /}
+                value=${value,,}
+                if [[ ! $value =~ ^(on|off|1|0|yes|no|true|false)$ ]]; then
+                    die "invalid value in $CONFIG_FILE: ACTIVITY_TRACKING must be on or off (got '$value')"
+                fi
+                [[ -z ${POMO_TRACKING:-} ]] && ACTIVITY_TRACKING=$value
+                ;;
+            IDLE_THRESHOLD_SECONDS)
+                value=${raw%%#*}
+                value=${value//$'\t'/}; value=${value// /}
+                if [[ ! $value =~ ^[0-9]+$ ]] || (( value == 0 )); then
+                    die "invalid value in $CONFIG_FILE: IDLE_THRESHOLD_SECONDS must be a positive integer (got '$value')"
+                fi
+                [[ -z ${POMO_IDLE_THRESHOLD:-} ]] && IDLE_THRESHOLD_SECONDS=$value
+                ;;
         esac
     done < "$CONFIG_FILE"
     return 0
 }
 
 show_config() {
+    detect_tracker_backend
     if [[ -f $CONFIG_FILE ]]; then
         printf 'Config file : %s (active)\n' "$CONFIG_FILE"
     else
@@ -400,11 +429,30 @@ show_config() {
     fi
     printf 'Focus sound : %s\n' "${FOCUS_SOUND:-$SPEAKER_SOUND}"
     printf 'Break sound : %s\n' "$BREAK_SOUND"
+    if ! tracking_enabled; then
+        printf 'Tracking    : off\n'
+    elif [[ $TRACKER_BACKEND == none ]]; then
+        printf 'Tracking    : on (no desktop backend detected)\n'
+    else
+        local idle_src='window/cursor'
+        if [[ $TRACKER_BACKEND == hyprland || $TRACKER_BACKEND == sway ]]; then
+            if command -v swayidle >/dev/null 2>&1; then
+                idle_src='swayidle (keyboard+pointer)'
+            else
+                idle_src='window/cursor (install swayidle for keyboard)'
+            fi
+        elif [[ $TRACKER_BACKEND == x11 ]] && command -v xprintidle >/dev/null 2>&1; then
+            idle_src='xprintidle (keyboard+pointer)'
+        fi
+        printf 'Tracking    : on (backend: %s, idle: %s, cutoff: %d s)\n' \
+            "$TRACKER_BACKEND" "$idle_src" "$IDLE_THRESHOLD_SECONDS"
+    fi
     if [[ ! -f $CONFIG_FILE ]]; then
         printf 'To change durations permanently, create the file with lines like:\n'
         printf '  FOCUS_SECONDS=1800        # 30 min\n'
         printf "  NOTIFY_CMD=notify-send -u normal -a pomo \"\$1\" \"\$2\"\n"
         printf '  FOCUS_SOUND=/usr/share/sounds/freedesktop/stereo/complete.oga\n'
+        printf '  ACTIVITY_TRACKING=on\n'
     fi
 }
 
@@ -438,6 +486,7 @@ init_terminal() {
 
 cleanup() {
     # Dipanggil via trap EXIT: pulihkan terminal apa pun penyebab keluarnya.
+    stop_idle_watcher
     if (( TUI_ACTIVE )); then
         TUI_ACTIVE=0
         printf '%s' "${E}[?25h${E}[?1049l"
@@ -509,6 +558,304 @@ log_session() {
     fi
     mkdir -p "$DATA_DIR"
     printf '%s|%s|%s\n' "$(date +%F)" "$type" "$secs" >> "$HISTORY_FILE"
+}
+
+# ========================= PELACAKAN AKTIVITAS ==============================
+# Selama sesi fokus berjalan (tidak pause), pomo mencatat nama aplikasi aktif,
+# jumlah perpindahan aplikasi (context switches), dan estimasi waktu aktif vs
+# diam (idle) — tanpa keylogger dan tanpa root.
+
+declare -gA ACT_APP_SECS=()
+ACT_SWITCHES=0
+ACT_ACTIVE_SECS=0
+ACT_IDLE_SECS=0
+ACT_SAMPLES=0
+ACT_LAST_APP=''
+ACT_LAST_SIG=''
+ACT_LAST_MOVE_EPOCH=0
+ACT_LAST_SAMPLE_EPOCH=0
+
+PROBE_APP=''
+PROBE_TITLE=''
+PROBE_CURSOR=''
+PROBE_IDLE_MS=-1
+
+tracking_enabled() {
+    [[ ! ${ACTIVITY_TRACKING,,} =~ ^(off|0|no|false)$ ]]
+}
+
+detect_tracker_backend() {
+    if ! tracking_enabled; then
+        TRACKER_BACKEND='off'
+        return 0
+    fi
+    if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] && command -v hyprctl >/dev/null 2>&1; then
+        TRACKER_BACKEND='hyprland'
+    elif [[ -n ${SWAYSOCK:-} ]] && command -v swaymsg >/dev/null 2>&1; then
+        TRACKER_BACKEND='sway'
+    elif [[ -n ${DISPLAY:-} ]] && { command -v xdotool >/dev/null 2>&1 || command -v xprop >/dev/null 2>&1; }; then
+        TRACKER_BACKEND='x11'
+    else
+        TRACKER_BACKEND='none'
+    fi
+}
+
+sanitize_field() {
+    # Bersihkan delimiter '|' dan newline agar format log tetap aman
+    local s=$1
+    s=${s//$'\r'/ }
+    s=${s//$'\n'/ }
+    s=${s//|/ }
+    s=${s#"${s%%[![:space:]]*}"}
+    s=${s%"${s##*[![:space:]]}"}
+    printf '%s' "$s"
+}
+
+normalize_app_name() {
+    local name=$1
+    name=${name//$'\r'/}
+    name=${name//$'\n'/}
+    name=${name#"${name%%[![:space:]]*}"}
+    name=${name%"${name##*[![:space:]]}"}
+    name=${name,,}
+    name=${name%.desktop}
+    # Rapikan nama reverse-DNS seperti com.mitchellh.ghostty / org.mozilla.firefox
+    if [[ $name =~ ^(org|com|net|io|dev|app)\..+\.[^.]+$ ]]; then
+        name=${name##*.}
+    fi
+    # Buang karakter pemisah log
+    name=${name//|/}
+    name=${name//,/}
+    name=${name//=/}
+    case $name in
+        code-oss|code-url-handler|visual-studio-code) name='code' ;;
+        google-chrome|google-chrome-stable)           name='chrome' ;;
+        chromium-browser)                             name='chromium' ;;
+        '')                                           name='unknown' ;;
+    esac
+    if (( ${#name} > 24 )); then
+        name=${name:0:24}
+    fi
+    printf '%s' "$name"
+}
+
+format_duration_short() {
+    local secs=$1
+    if (( secs < 60 )); then
+        printf '%ds' "$secs"
+    else
+        printf '%dm' "$(( (secs + 30) / 60 ))"
+    fi
+}
+
+activity_reset() {
+    ACT_APP_SECS=()
+    ACT_SWITCHES=0
+    ACT_ACTIVE_SECS=0
+    ACT_IDLE_SECS=0
+    ACT_SAMPLES=0
+    ACT_LAST_APP=''
+    ACT_LAST_SIG=''
+    ACT_LAST_MOVE_EPOCH=$(now)
+    ACT_LAST_SAMPLE_EPOCH=0
+}
+
+idle_watcher_supported() {
+    [[ $TRACKER_BACKEND == hyprland || $TRACKER_BACKEND == sway ]] \
+        && command -v swayidle >/dev/null 2>&1
+}
+
+stop_idle_watcher() {
+    if [[ -n $IDLE_WATCHER_PID ]]; then
+        kill "$IDLE_WATCHER_PID" 2>/dev/null || true
+        wait "$IDLE_WATCHER_PID" 2>/dev/null || true
+        IDLE_WATCHER_PID=''
+    fi
+    if [[ -n $IDLE_STATE_FILE ]]; then
+        rm -f "$IDLE_STATE_FILE" 2>/dev/null || true
+        IDLE_STATE_FILE=''
+    fi
+}
+
+start_idle_watcher() {
+    # Gunakan protokol Wayland ext-idle-notify-v1 via swayidle bila tersedia:
+    # mendeteksi aktivitas keyboard/touchpad/mouse di tingkat compositor tanpa
+    # keylogger dan tanpa hak akses root.
+    stop_idle_watcher
+    idle_watcher_supported || return 0
+    local dir=${XDG_RUNTIME_DIR:-/tmp}
+    [[ -d $dir ]] || mkdir -p "$dir" 2>/dev/null || dir=/tmp
+    IDLE_STATE_FILE=$(mktemp "$dir/.pomo-idle.XXXXXX" 2>/dev/null) || {
+        IDLE_STATE_FILE=''
+        return 0
+    }
+    printf '0\n' > "$IDLE_STATE_FILE" 2>/dev/null || true
+    local cmd_idle cmd_active
+    printf -v cmd_idle 'printf "1\\n" > %q' "$IDLE_STATE_FILE"
+    printf -v cmd_active 'printf "0\\n" > %q' "$IDLE_STATE_FILE"
+    swayidle -w \
+        timeout "$IDLE_THRESHOLD_SECONDS" "$cmd_idle" \
+        resume "$cmd_active" </dev/null >/dev/null 2>&1 &
+    IDLE_WATCHER_PID=$!
+}
+
+read_wayland_idle_ms() {
+    [[ -n $IDLE_WATCHER_PID && -n $IDLE_STATE_FILE && -f $IDLE_STATE_FILE ]] || return 1
+    kill -0 "$IDLE_WATCHER_PID" 2>/dev/null || return 1
+    local state=''
+    IFS= read -r state < "$IDLE_STATE_FILE" 2>/dev/null || return 1
+    if [[ $state == 1 ]]; then
+        PROBE_IDLE_MS=$(( IDLE_THRESHOLD_SECONDS * 1000 ))
+        return 0
+    elif [[ $state == 0 ]]; then
+        PROBE_IDLE_MS=0
+        return 0
+    fi
+    return 1
+}
+
+tracker_probe() {
+    # Baca jendela aktif & sinyal aktivitas sesuai backend desktop.
+    # Mengisi global PROBE_APP, PROBE_TITLE, PROBE_CURSOR, PROBE_IDLE_MS.
+    PROBE_APP=''
+    PROBE_TITLE=''
+    PROBE_CURSOR=''
+    PROBE_IDLE_MS=-1
+    case $TRACKER_BACKEND in
+        hyprland)
+            local json parsed
+            json=$(hyprctl activewindow -j 2>/dev/null) || return 1
+            [[ -n $json ]] || return 1
+            if command -v jq >/dev/null 2>&1; then
+                parsed=$(jq -r '[(.class // ""), (.title // "")] | @tsv' <<< "$json" 2>/dev/null) || parsed=''
+                IFS=$'\t' read -r PROBE_APP PROBE_TITLE <<< "$parsed"
+            else
+                PROBE_APP=$(sed -n 's/^[[:space:]]*"class":[[:space:]]*"\([^"]*\)".*/\1/p' <<< "$json" | head -n 1)
+                PROBE_TITLE=$(sed -n 's/^[[:space:]]*"title":[[:space:]]*"\([^"]*\)".*/\1/p' <<< "$json" | head -n 1)
+            fi
+            PROBE_CURSOR=$(hyprctl cursorpos 2>/dev/null || true)
+            read_wayland_idle_ms || true
+            [[ -n $PROBE_APP || -n $PROBE_TITLE ]] || return 1
+            return 0
+            ;;
+        sway)
+            local tree parsed
+            command -v jq >/dev/null 2>&1 || return 1
+            tree=$(swaymsg -t get_tree 2>/dev/null) || return 1
+            parsed=$(jq -r '.. | select(type == "object" and .focused? == true) | [(.app_id // .window_properties.class // ""), (.name // "")] | @tsv' <<< "$tree" 2>/dev/null | head -n 1) || parsed=''
+            IFS=$'\t' read -r PROBE_APP PROBE_TITLE <<< "$parsed"
+            read_wayland_idle_ms || true
+            [[ -n $PROBE_APP || -n $PROBE_TITLE ]] || return 1
+            return 0
+            ;;
+        x11)
+            local wid=''
+            if command -v xdotool >/dev/null 2>&1; then
+                wid=$(xdotool getactivewindow 2>/dev/null) || wid=''
+                if [[ -n $wid ]]; then
+                    PROBE_APP=$(xdotool getwindowclassname "$wid" 2>/dev/null || true)
+                    PROBE_TITLE=$(xdotool getwindowname "$wid" 2>/dev/null || true)
+                fi
+            elif command -v xprop >/dev/null 2>&1; then
+                wid=$(xprop -root _NET_ACTIVE_WINDOW 2>/dev/null | sed -n 's/.*window id # \(0x[0-9a-fA-F]*\).*/\1/p')
+                if [[ -n $wid && $wid != 0x0 ]]; then
+                    PROBE_APP=$(xprop -id "$wid" WM_CLASS 2>/dev/null | sed -n 's/.*"[^"]*",[[:space:]]*"\([^"]*\)".*/\1/p')
+                fi
+            fi
+            if command -v xprintidle >/dev/null 2>&1; then
+                PROBE_IDLE_MS=$(xprintidle 2>/dev/null || printf '%s' '-1')
+            fi
+            [[ -n $PROBE_APP || -n $PROBE_TITLE ]] || return 1
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+activity_record_sample() {
+    # $1 raw_app, $2 title, $3 cursor, $4 idle_ms (-1 jika tak tersedia),
+    # $5 dt detik, $6 epoch sekarang
+    local app title=$2 cursor=$3 idle_ms=$4 dt=$5 epoch=$6
+    app=$(normalize_app_name "$1")
+    (( dt <= 0 )) && dt=$TRACK_INTERVAL
+
+    if (( ACT_SAMPLES > 0 )) && [[ $app != "$ACT_LAST_APP" ]]; then
+        ACT_SWITCHES=$(( ACT_SWITCHES + 1 ))
+    fi
+    ACT_LAST_APP=$app
+    ACT_SAMPLES=$(( ACT_SAMPLES + 1 ))
+
+    local is_idle=0 sig="${app}|${title}|${cursor}"
+    if [[ $idle_ms =~ ^[0-9]+$ ]]; then
+        if (( idle_ms >= IDLE_THRESHOLD_SECONDS * 1000 )); then
+            is_idle=1
+        fi
+    else
+        if [[ -z $ACT_LAST_SIG || $sig != "$ACT_LAST_SIG" ]]; then
+            ACT_LAST_MOVE_EPOCH=$epoch
+            ACT_LAST_SIG=$sig
+        fi
+        if (( epoch - ACT_LAST_MOVE_EPOCH >= IDLE_THRESHOLD_SECONDS )); then
+            is_idle=1
+        fi
+    fi
+
+    if (( is_idle )); then
+        ACT_IDLE_SECS=$(( ACT_IDLE_SECS + dt ))
+    else
+        ACT_ACTIVE_SECS=$(( ACT_ACTIVE_SECS + dt ))
+    fi
+    ACT_APP_SECS[$app]=$(( ${ACT_APP_SECS[$app]:-0} + dt ))
+}
+
+activity_sample_tick() {
+    # Dipanggil dari loop run_timer() hanya untuk sesi focus saat tidak pause.
+    [[ $CURRENT_MODE == focus ]] || return 0
+    [[ $TRACKER_BACKEND != none && $TRACKER_BACKEND != off ]] || return 0
+    local now_ts dt
+    now_ts=$(now)
+    if (( ACT_LAST_SAMPLE_EPOCH == 0 )); then
+        dt=$TRACK_INTERVAL
+    else
+        dt=$(( now_ts - ACT_LAST_SAMPLE_EPOCH ))
+        (( dt < TRACK_INTERVAL )) && return 0
+        # Hindari lonjakan durasi ke satu app bila laptop sempat sleep/pause
+        (( dt > TRACK_INTERVAL * 2 )) && dt=$TRACK_INTERVAL
+    fi
+    ACT_LAST_SAMPLE_EPOCH=$now_ts
+    if tracker_probe; then
+        activity_record_sample "$PROBE_APP" "$PROBE_TITLE" "$PROBE_CURSOR" "$PROBE_IDLE_MS" "$dt" "$now_ts"
+    fi
+    return 0
+}
+
+activity_sorted_apps() {
+    (( ${#ACT_APP_SECS[@]} == 0 )) && return 0
+    local app
+    for app in "${!ACT_APP_SECS[@]}"; do
+        printf '%d|%s\n' "${ACT_APP_SECS[$app]}" "$app"
+    done | sort -t'|' -k1,1nr -k2,2
+}
+
+log_activity() {
+    # $1 durasi sesi fokus (detik). Hanya simpan jika ada sampel atau task.
+    local duration=$1
+    if (( ACT_SAMPLES == 0 )) && [[ -z $SESSION_TASK ]]; then
+        return 0
+    fi
+    local clean_task apps_csv='' secs app
+    clean_task=$(sanitize_field "$SESSION_TASK")
+    while IFS='|' read -r secs app; do
+        [[ -n $app ]] || continue
+        if [[ -n $apps_csv ]]; then apps_csv+=','; fi
+        apps_csv+="${app}=${secs}"
+    done < <(activity_sorted_apps)
+    mkdir -p "$DATA_DIR"
+    printf '%s|%s|%s|%s|%d|%d|%d|%s\n' \
+        "$(date +%F)" "$(date +%H:%M)" "$duration" "$clean_task" \
+        "$ACT_SWITCHES" "$ACT_ACTIVE_SECS" "$ACT_IDLE_SECS" "$apps_csv" >> "$ACTIVITY_FILE"
 }
 
 # ============================== STATUS SESI =================================
@@ -996,10 +1343,13 @@ draw_ui() {
         "$pad_s" "$c_card_border" "$C_RESET" "$lp_s" "$bar" "$rp_s" "$c_card_border" "$C_RESET"
     frame+="$line${E}[K"$'\n'
 
-    # Baris info elapsed di dalam card
+    # Baris info elapsed (plus indikator tracking bila aktif pada sesi fokus)
     local info
     printf -v info 'Elapsed %02d:%02d of %02d:%02d' \
         $(( elapsed / 60 )) $(( elapsed % 60 )) $(( total / 60 )) $(( total % 60 ))
+    if [[ $CURRENT_MODE == focus && $TRACKER_BACKEND != none && $TRACKER_BACKEND != off ]]; then
+        info+='  ·  tracking'
+    fi
     lp=$(( (card_inner - ${#info}) / 2 )); (( lp < 0 )) && lp=0
     rp=$(( card_inner - ${#info} - lp )); (( rp < 0 )) && rp=0
     printf -v lp_s '%*s' "$lp" ''
@@ -1027,6 +1377,168 @@ draw_ui() {
     frame+="$line${E}[K"$'\n'
 
     # cursor-home + clear-to-end: redraw mulus tanpa flicker
+    printf '%s%s%s' "${E}[H" "$frame" "${E}[0J"
+}
+
+draw_focus_recap() {
+    # Rounded Focus Recap Card saat sesi fokus selesai.
+    # $1 durasi sesi (detik), $2 label sesi berikutnya
+    local duration=$1 next_label=$2
+    local cols=$TERM_COLS rows=$TERM_LINES
+    local card_inner=48
+    if (( card_inner + 2 > cols )); then
+        card_inner=$(( cols - 2 ))
+    fi
+    (( card_inner < 36 )) && card_inner=36
+    local card_w=$(( card_inner + 2 ))
+
+    local pad pad_s blank_inner hbar
+    pad=$(( (cols - card_w) / 2 )); (( pad < 0 )) && pad=0
+    printf -v pad_s '%*s' "$pad" ''
+    printf -v blank_inner '%*s' "$card_inner" ''
+    hbar=${blank_inner// /─}
+
+    local -a body_plain=() body_styled=()
+    local clean_task max_task
+    clean_task=$(sanitize_field "$SESSION_TASK")
+    if [[ -n $clean_task ]]; then
+        max_task=$(( card_inner - 15 ))
+        (( max_task < 8 )) && max_task=8
+        if (( ${#clean_task} > max_task )); then
+            clean_task="${clean_task:0:max_task-1}…"
+        fi
+        body_plain+=("  Task     : $clean_task")
+        body_styled+=("  ${C_DIM}Task     :${C_RESET} ${C_WHITE}${C_BOLD}${clean_task}${C_RESET}")
+    fi
+
+    if (( ACT_SAMPLES > 0 )); then
+        local total_tracked=$(( ACT_ACTIVE_SECS + ACT_IDLE_SECS ))
+        local active_pct=100 idle_pct=0
+        if (( total_tracked > 0 )); then
+            active_pct=$(( ACT_ACTIVE_SECS * 100 / total_tracked ))
+            idle_pct=$(( 100 - active_pct ))
+        fi
+        local sw_word='app switches'
+        (( ACT_SWITCHES == 1 )) && sw_word='app switch'
+        local act_line="${active_pct}% active · ${ACT_SWITCHES} ${sw_word}"
+        body_plain+=("  Activity : $act_line")
+        body_styled+=("  ${C_DIM}Activity :${C_RESET} ${C_GREEN}${active_pct}% active${C_RESET}${C_DIM} · ${C_RESET}${C_WHITE}${ACT_SWITCHES} ${sw_word}${C_RESET}")
+
+        local idle_dur idle_line
+        idle_dur=$(format_duration_short "$ACT_IDLE_SECS")
+        idle_line="${idle_pct}% idle (${idle_dur})"
+        body_plain+=("  Idle     : $idle_line")
+        if (( ACT_IDLE_SECS > 0 )); then
+            body_styled+=("  ${C_DIM}Idle     :${C_RESET} ${C_YELLOW}${idle_pct}% idle${C_RESET} ${C_DIM}(${idle_dur})${C_RESET}")
+        else
+            body_styled+=("  ${C_DIM}Idle     :${C_RESET} ${C_DIM}${idle_line}${C_RESET}")
+        fi
+
+        body_plain+=('')
+        body_styled+=('')
+        body_plain+=('  Apps used:')
+        body_styled+=("  ${C_DIM}Apps used:${C_RESET}")
+
+        local bar_w=$(( card_inner - 30 ))
+        (( bar_w > 16 )) && bar_w=16
+        (( bar_w < 6 )) && bar_w=6
+
+        local shown=0 secs app app_disp pct filled rest_w b_fill b_rest dur_s i
+        while IFS='|' read -r secs app; do
+            [[ -n $app ]] || continue
+            (( shown >= 5 )) && break
+            shown=$(( shown + 1 ))
+            app_disp=$app
+            if (( ${#app_disp} > 11 )); then
+                app_disp="${app_disp:0:10}…"
+            fi
+            pct=0
+            (( total_tracked > 0 )) && pct=$(( secs * 100 / total_tracked ))
+            filled=$(( pct * bar_w / 100 ))
+            (( filled == 0 && secs > 0 )) && filled=1
+            (( filled > bar_w )) && filled=$bar_w
+            rest_w=$(( bar_w - filled ))
+            b_fill=''
+            b_rest=''
+            for (( i = 0; i < filled; i++ )); do b_fill+='━'; done
+            for (( i = 0; i < rest_w; i++ )); do b_rest+='─'; done
+            dur_s=$(format_duration_short "$secs")
+            local pl sl
+            printf -v pl '    %-11s %s%s  %4s (%3d%%)' "$app_disp" "$b_fill" "$b_rest" "$dur_s" "$pct"
+            printf -v sl '    %s%-11s%s %s%s%s%s%s%s  %s%4s%s %s(%3d%%)%s' \
+                "$C_WHITE" "$app_disp" "$C_RESET" \
+                "$C_BAR" "$b_fill" "$C_RESET" "$C_DIM" "$b_rest" "$C_RESET" \
+                "$C_WHITE" "$dur_s" "$C_RESET" "$C_DIM" "$pct" "$C_RESET"
+            body_plain+=("$pl")
+            body_styled+=("$sl")
+        done < <(activity_sorted_apps)
+    else
+        local dur_label
+        if (( duration >= 60 )); then
+            dur_label="$(( duration / 60 )) min"
+        else
+            dur_label="${duration}s"
+        fi
+        body_plain+=("  All $dur_label of focus logged — nice work!")
+        body_styled+=("  ${C_WHITE}All ${dur_label} of focus logged — nice work!${C_RESET}")
+        if [[ $TRACKER_BACKEND == off ]]; then
+            body_plain+=('  Activity tracking is turned off.')
+            body_styled+=("  ${C_DIM}Activity tracking is turned off.${C_RESET}")
+        elif [[ $TRACKER_BACKEND == none ]]; then
+            body_plain+=('  No desktop window tracker detected.')
+            body_styled+=("  ${C_DIM}No desktop window tracker detected.${C_RESET}")
+        fi
+    fi
+
+    local total_h=$(( ${#body_plain[@]} + 6 ))
+    local top_pad=$(( (rows - total_h) / 2 ))
+    (( top_pad < 0 )) && top_pad=0
+    local frame='' n line
+    for (( n = 0; n < top_pad; n++ )); do frame+="${E}[K"$'\n'; done
+
+    local hdr_left='✓ FOCUS COMPLETE' hdr_right
+    if (( duration >= 60 )); then
+        hdr_right="$(( duration / 60 )) min"
+    else
+        hdr_right="${duration}s"
+    fi
+    local mid_dashes=$(( card_inner - ${#hdr_left} - ${#hdr_right} - 6 ))
+    (( mid_dashes < 1 )) && mid_dashes=1
+    local mid_bar
+    printf -v mid_bar '%*s' "$mid_dashes" ''
+    mid_bar=${mid_bar// /─}
+
+    printf -v line '%s%s╭─ %s%s%s%s %s %s%s%s ─╮%s' \
+        "$pad_s" "$C_BORDER" "$C_TITLE" "$C_BOLD" "$hdr_left" "${C_RESET}${C_BORDER}" \
+        "$mid_bar" "$C_WHITE" "$hdr_right" "${C_RESET}${C_BORDER}" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+
+    printf -v line '%s%s│%s%s%s│%s' "$pad_s" "$C_BORDER" "$C_RESET" "$blank_inner" "$C_BORDER" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+
+    local idx rp rp_s
+    for (( idx = 0; idx < ${#body_plain[@]}; idx++ )); do
+        rp=$(( card_inner - ${#body_plain[idx]} ))
+        (( rp < 0 )) && rp=0
+        printf -v rp_s '%*s' "$rp" ''
+        printf -v line '%s%s│%s%s%s%s│%s' \
+            "$pad_s" "$C_BORDER" "$C_RESET" "${body_styled[idx]}" "$rp_s" "$C_BORDER" "$C_RESET"
+        frame+="$line${E}[K"$'\n'
+    done
+
+    printf -v line '%s%s│%s%s%s│%s' "$pad_s" "$C_BORDER" "$C_RESET" "$blank_inner" "$C_BORDER" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+    printf -v line '%s%s╰%s╯%s' "$pad_s" "$C_BORDER" "$hbar" "$C_RESET"
+    frame+="$line${E}[K"$'\n'
+    frame+="${E}[K"$'\n'
+
+    local plain status
+    plain="Enter $next_label  ·  m menu  ·  t stats  ·  d durations  ·  q quit"
+    status="${C_KEY}${C_BOLD}Enter${C_RESET} ${C_WHITE}${next_label}${C_RESET}${C_DIM}  ·  ${C_RESET}${C_KEY}${C_BOLD}m${C_RESET} ${C_DIM}menu  ·  ${C_RESET}${C_KEY}${C_BOLD}t${C_RESET} ${C_DIM}stats  ·  ${C_RESET}${C_KEY}${C_BOLD}d${C_RESET} ${C_DIM}durations  ·  ${C_RESET}${C_KEY}${C_BOLD}q${C_RESET} ${C_DIM}quit${C_RESET}"
+    pad=$(( (cols - ${#plain}) / 2 )); (( pad < 0 )) && pad=0
+    printf -v line '%*s%s' "$pad" '' "$status"
+    frame+="$line${E}[K"$'\n'
+
     printf '%s%s%s' "${E}[H" "$frame" "${E}[0J"
 }
 
@@ -1558,6 +2070,7 @@ run_timer() {
                 return 0
             fi
             frozen=$remaining
+            activity_sample_tick
         fi
 
         if (( RESIZED )); then
@@ -1613,6 +2126,8 @@ run_timer() {
                 if (( paused )); then
                     paused=0
                     end=$(( $(now) + frozen ))
+                    ACT_LAST_SAMPLE_EPOCH=0
+                    [[ -n $IDLE_STATE_FILE && -f $IDLE_STATE_FILE ]] && printf '0\n' > "$IDLE_STATE_FILE" 2>/dev/null || true
                 else
                     paused=1
                 fi
@@ -1641,6 +2156,8 @@ run_timer() {
                         if (( menu_was_paused == 0 )); then
                             paused=0
                             end=$(( $(now) + frozen ))
+                            ACT_LAST_SAMPLE_EPOCH=0
+                            [[ -n $IDLE_STATE_FILE && -f $IDLE_STATE_FILE ]] && printf '0\n' > "$IDLE_STATE_FILE" 2>/dev/null || true
                         fi
                         # Paksa redraw timer karena layar berisi overlay menu
                         last_frame=''
@@ -1655,19 +2172,25 @@ run_timer() {
 
 prompt_continue() {
     # $1 judul, $2 pesan, $3 label mode berikutnya
+    # $4 opsional: 'focus_recap', $5 opsional: durasi sesi (detik)
     # Return: 0 = lanjut, 1 = berhenti.
     # Bila user memilih sesi lewat menu di layar ini, mode berikutnya
     # di-override lewat global PROMPT_NEXT_MODE.
+    local title=$1 msg=$2 next_label=$3 style=${4:-} duration=${5:-0}
     if (( ! INTERACTIVE )); then
         # Mode non-interaktif (stdin bukan tty): sesi tunggal lalu selesai.
-        printf '%s\n' "$1 — $2"
+        printf '%s\n' "$title — $msg"
         return 1
     fi
 
     local ans=''
     while :; do
-        draw_message "$1" "$2" \
-            "Press [Enter] to start $3  ·  [m] menu  ·  [t] stats  ·  [d] durations  ·  [q] to quit"
+        if [[ $style == focus_recap ]]; then
+            draw_focus_recap "$duration" "$next_label"
+        else
+            draw_message "$title" "$msg" \
+                "Press [Enter] to start $next_label  ·  [m] menu  ·  [t] stats  ·  [d] durations  ·  [q] to quit"
+        fi
         ans=''
         if ! read_key ans; then
             return 1   # EOF di stdin
@@ -1726,6 +2249,11 @@ run_cycle() {
         label=$(mode_label "$mode")
         CURRENT_MODE=$mode
         set_mode_colors "$mode"
+        if [[ $mode == focus ]]; then
+            detect_tracker_backend
+            activity_reset
+            start_idle_watcher
+        fi
 
         # Indikator progres siklus untuk layar timer (● = fokus selesai di
         # siklus berjalan; saat long break semua terisi).
@@ -1746,6 +2274,7 @@ run_cycle() {
         else
             run_timer "$duration" "$label" || rc=$?
         fi
+        stop_idle_watcher
         clear_state
         case $rc in
             1)
@@ -1773,6 +2302,7 @@ run_cycle() {
                         "Nice work — $(( duration / 60 )) minutes of focus logged."
                     play_speaker "$FOCUS_SOUND"
                     log_session focus "$duration"
+                    log_activity "$duration"
                     focus_done=$(( focus_done + 1 ))
                     ;;
                 short_break)
@@ -1804,7 +2334,11 @@ run_cycle() {
         next_label=$(mode_label "$next")
 
         if (( completed )); then
-            if ! prompt_continue 'SESSION COMPLETE' "$msg" "$next_label"; then
+            if [[ $mode == focus ]]; then
+                if ! prompt_continue 'SESSION COMPLETE' "$msg" "$next_label" focus_recap "$duration"; then
+                    return 0
+                fi
+            elif ! prompt_continue 'SESSION COMPLETE' "$msg" "$next_label"; then
                 return 0
             fi
         else
@@ -1828,13 +2362,17 @@ start_session() {
 
     # Show confirmation in UI for focus mode
     if [[ $1 == "focus" && ${2:-} == "confirm" ]]; then
-        local label duration mins
+        local label duration mins confirm_msg
         label=$(mode_label "$1")
         duration=$(mode_duration "$1")
         mins=$(( duration / 60 ))
         set_mode_colors "$1"
 
-        draw_message "START CONFIRMATION" "Start $label ($mins min)?" "Press [Enter] to start  ·  [q] to quit"
+        confirm_msg="Start $label ($mins min)?"
+        if [[ -n $SESSION_TASK ]]; then
+            confirm_msg="Start $label ($mins min) — $SESSION_TASK?"
+        fi
+        draw_message "START CONFIRMATION" "$confirm_msg" "Press [Enter] to start  ·  [q] to quit"
 
         local ans=''
         while :; do
@@ -1943,6 +2481,201 @@ show_stats() {
     printf '\n'
     printf '%s7-day total:%s %d sessions · %d minutes focused\n' \
         "$C_DIM" "$C_RESET" "$total_sessions" "$total_minutes"
+
+    # Ringkasan singkat Top Apps Today bila ada data aktivitas hari ini
+    if [[ -f $ACTIVITY_FILE ]]; then
+        local -A today_apps=()
+        local -a pairs=()
+        local a_date a_csv pair app_k app_v total_app_secs=0
+        while IFS='|' read -r a_date _ _ _ _ _ _ a_csv || [[ -n ${a_date:-} ]]; do
+            [[ $a_date == "$today" && -n ${a_csv:-} ]] || continue
+            IFS=',' read -ra pairs <<< "$a_csv"
+            for pair in "${pairs[@]}"; do
+                [[ $pair == *=* ]] || continue
+                app_k=${pair%%=*}
+                app_v=${pair#*=}
+                [[ -n $app_k && $app_v =~ ^[0-9]+$ ]] || continue
+                today_apps[$app_k]=$(( ${today_apps[$app_k]:-0} + app_v ))
+                total_app_secs=$(( total_app_secs + app_v ))
+            done
+        done < "$ACTIVITY_FILE"
+
+        if (( total_app_secs > 0 )); then
+            printf '\n'
+            printf '%sTop Apps Today%s\n' "$C_BOLD" "$C_RESET"
+            local shown=0 app_s app_n pct bar_s f_len k_i d_fmt
+            while IFS='|' read -r app_s app_n; do
+                [[ -n $app_n ]] || continue
+                (( shown >= 5 )) && break
+                shown=$(( shown + 1 ))
+                pct=$(( app_s * 100 / total_app_secs ))
+                f_len=$(( pct * 20 / 100 ))
+                (( f_len == 0 && app_s > 0 )) && f_len=1
+                bar_s=''
+                for (( k_i = 0; k_i < f_len; k_i++ )); do bar_s+='━'; done
+                d_fmt=$(format_duration_short "$app_s")
+                printf '  %s%-14s%s %s%4s%s %s(%3d%%)%s  %s%s%s\n' \
+                    "$C_CYAN" "$app_n" "$C_RESET" \
+                    "$C_GREEN" "$d_fmt" "$C_RESET" \
+                    "$C_DIM" "$pct" "$C_RESET" \
+                    "${C_BAR:-$C_GREEN}" "$bar_s" "$C_RESET"
+            done < <(
+                for app_k in "${!today_apps[@]}"; do
+                    printf '%d|%s\n' "${today_apps[$app_k]}" "$app_k"
+                done | sort -t'|' -k1,1nr -k2,2
+            )
+        fi
+    fi
+}
+
+show_recap() {
+    # $1 opsional: 'last' | 'today' (default: today)
+    local scope=${1:-today}
+    if [[ $scope != today && $scope != last ]]; then
+        die "unknown recap option: '$scope'" "Usage: pomo recap [today|last]"
+    fi
+    if [[ ! -f $ACTIVITY_FILE ]]; then
+        printf 'No focus activity recaps recorded yet.\n'
+        printf 'Run "pomo" and complete a focus session to record activity.\n'
+        printf 'Activity recaps will be saved in %s\n' "$ACTIVITY_FILE"
+        return 0
+    fi
+
+    local today
+    today=$(date +%F)
+
+    if [[ $scope == last ]]; then
+        local last_line='' line
+        while IFS= read -r line || [[ -n $line ]]; do
+            [[ -n $line ]] && last_line=$line
+        done < "$ACTIVITY_FILE"
+        if [[ -z $last_line ]]; then
+            printf 'No focus activity recaps recorded yet.\n'
+            return 0
+        fi
+        local d tm dur task sw act idle csv
+        IFS='|' read -r d tm dur task sw act idle csv <<< "$last_line"
+        local dur_fmt tot_t act_pct=100
+        dur_fmt=$(format_duration_short "${dur:-0}")
+        tot_t=$(( ${act:-0} + ${idle:-0} ))
+        (( tot_t > 0 )) && act_pct=$(( act * 100 / tot_t ))
+        printf '%sLast Focus Recap%s — %s %s (%s)\n' "$C_BOLD" "$C_RESET" "$d" "$tm" "$dur_fmt"
+        if [[ -n ${task:-} ]]; then
+            printf '  Task     : %s%s%s\n' "$C_WHITE" "$task" "$C_RESET"
+        fi
+        if (( tot_t > 0 )); then
+            local idle_pct=$(( 100 - act_pct )) idle_fmt
+            idle_fmt=$(format_duration_short "${idle:-0}")
+            printf '  Activity : %s%d%% active%s · %d app switches\n' "$C_GREEN" "$act_pct" "$C_RESET" "${sw:-0}"
+            printf '  Idle     : %s%d%% idle%s (%s)\n' "$C_YELLOW" "$idle_pct" "$C_RESET" "$idle_fmt"
+        fi
+        if [[ -n ${csv:-} ]]; then
+            printf '  Apps used:\n'
+            local -a pairs=()
+            local pair app_k app_v pct f_len bar_s k_i d_fmt
+            IFS=',' read -ra pairs <<< "$csv"
+            for pair in "${pairs[@]}"; do
+                [[ $pair == *=* ]] || continue
+                app_k=${pair%%=*}
+                app_v=${pair#*=}
+                [[ -n $app_k && $app_v =~ ^[0-9]+$ ]] || continue
+                pct=0
+                (( tot_t > 0 )) && pct=$(( app_v * 100 / tot_t ))
+                f_len=$(( pct * 20 / 100 ))
+                (( f_len == 0 && app_v > 0 )) && f_len=1
+                bar_s=''
+                for (( k_i = 0; k_i < f_len; k_i++ )); do bar_s+='━'; done
+                d_fmt=$(format_duration_short "$app_v")
+                printf '    %s%-14s%s %s%4s%s %s(%3d%%)%s  %s%s%s\n' \
+                    "$C_CYAN" "$app_k" "$C_RESET" \
+                    "$C_GREEN" "$d_fmt" "$C_RESET" \
+                    "$C_DIM" "$pct" "$C_RESET" \
+                    "$C_GREEN" "$bar_s" "$C_RESET"
+            done
+        fi
+        return 0
+    fi
+
+    local -A agg_apps=()
+    local count=0 total_sw=0 total_act=0 total_idle=0 total_app_secs=0
+    local d tm dur task sw act idle csv
+    local -a session_lines=()
+    while IFS='|' read -r d tm dur task sw act idle csv || [[ -n ${d:-} ]]; do
+        [[ $d == "$today" ]] || continue
+        count=$(( count + 1 ))
+        total_sw=$(( total_sw + ${sw:-0} ))
+        total_act=$(( total_act + ${act:-0} ))
+        total_idle=$(( total_idle + ${idle:-0} ))
+        local dur_fmt top_app='-' s_line
+        dur_fmt=$(format_duration_short "${dur:-0}")
+        if [[ -n ${csv:-} ]]; then
+            local -a pairs=()
+            local pair app_k app_v first=1
+            IFS=',' read -ra pairs <<< "$csv"
+            for pair in "${pairs[@]}"; do
+                [[ $pair == *=* ]] || continue
+                app_k=${pair%%=*}
+                app_v=${pair#*=}
+                [[ -n $app_k && $app_v =~ ^[0-9]+$ ]] || continue
+                if (( first )); then
+                    top_app="$app_k ($(format_duration_short "$app_v"))"
+                    first=0
+                fi
+                agg_apps[$app_k]=$(( ${agg_apps[$app_k]:-0} + app_v ))
+                total_app_secs=$(( total_app_secs + app_v ))
+            done
+        fi
+        s_line="  $tm  $dur_fmt"
+        [[ -n ${task:-} ]] && s_line+="  [$task]"
+        s_line+="  · top: $top_app  · ${sw:-0} switches"
+        session_lines+=("$s_line")
+    done < "$ACTIVITY_FILE"
+
+    if (( count == 0 )); then
+        printf 'No focus activity recorded today (%s).\n' "$today"
+        printf 'Run "pomo recap last" to view your most recent recorded session.\n'
+        return 0
+    fi
+
+    printf '%sFocus Activity Recap%s — %s\n\n' "$C_BOLD" "$C_RESET" "$today"
+    local tot_t=$(( total_act + total_idle )) act_pct=100
+    (( tot_t > 0 )) && act_pct=$(( total_act * 100 / tot_t ))
+    printf '  Sessions : %s%d%s\n' "$C_GREEN" "$count" "$C_RESET"
+    if (( tot_t > 0 )); then
+        local idle_pct=$(( 100 - act_pct )) idle_fmt
+        idle_fmt=$(format_duration_short "$total_idle")
+        printf '  Activity : %s%d%% active%s · %d total app switches\n' "$C_GREEN" "$act_pct" "$C_RESET" "$total_sw"
+        printf '  Idle     : %s%d%% idle%s (%s)\n' "$C_YELLOW" "$idle_pct" "$C_RESET" "$idle_fmt"
+    fi
+
+    printf '\n%sSessions today%s\n' "$C_BOLD" "$C_RESET"
+    local sl
+    for sl in "${session_lines[@]}"; do
+        printf '%s\n' "$sl"
+    done
+
+    if (( total_app_secs > 0 )); then
+        printf '\n%sTop Apps Today%s\n' "$C_BOLD" "$C_RESET"
+        local app_s app_n pct f_len bar_s k_i d_fmt ak
+        while IFS='|' read -r app_s app_n; do
+            [[ -n $app_n ]] || continue
+            pct=$(( app_s * 100 / total_app_secs ))
+            f_len=$(( pct * 20 / 100 ))
+            (( f_len == 0 && app_s > 0 )) && f_len=1
+            bar_s=''
+            for (( k_i = 0; k_i < f_len; k_i++ )); do bar_s+='━'; done
+            d_fmt=$(format_duration_short "$app_s")
+            printf '  %s%-14s%s %s%4s%s %s(%3d%%)%s  %s%s%s\n' \
+                "$C_CYAN" "$app_n" "$C_RESET" \
+                "$C_GREEN" "$d_fmt" "$C_RESET" \
+                "$C_DIM" "$pct" "$C_RESET" \
+                "$C_GREEN" "$bar_s" "$C_RESET"
+        done < <(
+            for ak in "${!agg_apps[@]}"; do
+                printf '%d|%s\n' "${agg_apps[$ak]}" "$ak"
+            done | sort -t'|' -k1,1nr -k2,2
+        )
+    fi
 }
 
 # ================================ HELP/VERSI ================================
@@ -1952,20 +2685,21 @@ show_help() {
 pomo — an eye-catching pomodoro timer for your terminal
 
 Usage:
-  pomo                Confirm, then start a focus session (25 min)
-  pomo start          Start a focus session immediately (25 min)
-  pomo -w             Start a short break (5 minutes)
-  pomo -W             Start a long break (15 minutes)
-  pomo resume         Resume the last interrupted session
-  pomo stats          Show session statistics
-  pomo status         One-line status for status bars (tmux/waybar)
-  pomo status --json  Same, as JSON with class/tooltip for styling
-  pomo theme [name]   Show the current theme, or set the theme
-  pomo themes         Same as "pomo theme"
-  pomo config         Show config file location and effective durations
-  pomo update         Update to the latest version from GitHub
-  pomo --help         Show this help
-  pomo --version      Show version
+  pomo [-t "task"]         Confirm, then start a focus session (25 min)
+  pomo start [-t "task"]   Start a focus session immediately (25 min)
+  pomo -w                  Start a short break (5 minutes)
+  pomo -W                  Start a long break (15 minutes)
+  pomo resume              Resume the last interrupted session
+  pomo stats               Show session statistics (and top apps today)
+  pomo recap [today|last]  Show focus activity recap (apps, switches, active %)
+  pomo status              One-line status for status bars (tmux/waybar)
+  pomo status --json       Same, as JSON with class/tooltip for styling
+  pomo theme [name]        Show the current theme, or set the theme
+  pomo themes              Same as "pomo theme"
+  pomo config              Show config file location and effective durations
+  pomo update              Update to the latest version from GitHub
+  pomo --help              Show this help
+  pomo --version           Show version
 
 Keys and menu:
 EOF
@@ -1982,7 +2716,9 @@ Cycle:
 
 Data:
   Completed sessions are logged to
-  ~/.local/share/pomo/history.log  (format: date|type|seconds)
+  ~/.local/share/pomo/history.log   (format: date|type|seconds)
+  Focus activity recaps are logged to
+  ~/.local/share/pomo/activity.log  (apps, switches, active/idle; no keylogging)
 
 Status bar:
   "pomo status" prints one line, e.g. "focus 12:34" or "short break 03:21
@@ -2017,6 +2753,8 @@ Configuration:
     SPEAKER_SOUND          default/fallback audio path (complete.oga)
     FOCUS_SOUND            focus completion audio (defaults to SPEAKER_SOUND)
     BREAK_SOUND            audio shared by both breaks (bell.oga)
+    ACTIVITY_TRACKING      on/off focus activity tracking (default on)
+    IDLE_THRESHOLD_SECONDS idle cutoff in seconds (default 60)
   Precedence: environment variable > pomo.conf > default.
   Per-run environment overrides:
     POMO_FOCUS_SECONDS          default 1500  (25 min)
@@ -2029,6 +2767,8 @@ Configuration:
     POMO_SPEAKER_SOUND          default/fallback audio path
     POMO_FOCUS_SOUND            focus completion audio
     POMO_BREAK_SOUND            audio shared by both breaks
+    POMO_TRACKING               set to "off" to disable focus activity tracking
+    POMO_IDLE_THRESHOLD         idle cutoff in seconds (default 60)
 
 Themes:
   Available themes: default, dracula, gruvbox, nord, solarized, matrix, mono
@@ -2104,6 +2844,27 @@ self_update() {
 
 # ================================== MAIN ====================================
 
+parse_task_arg() {
+    # Parsing opsional -t <task> / --task <task> / --task=<task>
+    while (( $# > 0 )); do
+        case $1 in
+            -t|--task)
+                [[ -n ${2:-} ]] || die "option '$1' requires a task description"
+                SESSION_TASK=$2
+                shift 2
+                ;;
+            --task=*)
+                SESSION_TASK=${1#--task=}
+                [[ -n $SESSION_TASK ]] || die "option '--task=' requires a task description"
+                shift
+                ;;
+            *)
+                die "unknown option: '$1'" "Try 'pomo --help' for usage information."
+                ;;
+        esac
+    done
+}
+
 main() {
     local cmd=${1:-}
     case $cmd in
@@ -2112,7 +2873,15 @@ main() {
             load_config
             start_session focus confirm
             ;;
+        -t|--task|--task=*)
+            parse_task_arg "$@"
+            load_theme
+            load_config
+            start_session focus confirm
+            ;;
         start)
+            shift
+            parse_task_arg "$@"
             load_theme
             load_config
             start_session focus
@@ -2135,6 +2904,10 @@ main() {
         stats)
             load_theme
             show_stats
+            ;;
+        recap)
+            load_theme
+            show_recap "${2:-today}"
             ;;
         status)
             show_status "${2:-}"
