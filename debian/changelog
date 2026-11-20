@@ -1,3 +1,16 @@
+pomo (1.9.0-1) unstable; urgency=medium
+
+  * Focus Session Activity Tracking & Recap: record active applications,
+    context switches, and active vs idle breakdown (with optional
+    Wayland swayidle keyboard+pointer support and no keylogging).
+  * Show a rounded Focus Recap Card (Task, Activity, Idle, and Apps used)
+    when a focus session completes; add "pomo recap [today|last]",
+    Top Apps Today in "pomo stats", and optional -t / --task flag.
+  * Customize Durations overlay: add ↑/↓ + Enter and ←/→ (±1 min)
+    arrow-key navigation alongside existing direct shortcuts.
+
+ -- Yapidev <yapidev@users.noreply.github.com>  Fri, 20 Nov 2026 14:57:00 +0700
+
 pomo (1.8.0-1) unstable; urgency=medium
 
   * Redesigned timer TUI: rounded half-block digits (▄/▀/█) with adaptive
