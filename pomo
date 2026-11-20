@@ -1632,7 +1632,7 @@ KEY_HELP=(
     '  b   Back to the timer'
     '  q   Quit'
     ''
-    'Duration keys (menu, d):'
+    'Duration keys (menu, d — ↑/↓ + Enter, ←/→ ±1 min, or direct keys):'
     '  f/s/l  Set focus / short / long break duration (1-120 min)'
     '  r      Reset to defaults (25/5/15 min)'
     '  a      Save durations to the config file'
@@ -1723,54 +1723,126 @@ show_stats_overlay() {
 }
 
 show_duration_config_overlay() {
-    # Overlay untuk mengustom durasi sesi
+    # Overlay untuk mengustom durasi sesi.
+    # Navigasi: ↑/↓ pilih + Enter jalankan, ←/→ ubah ±1 menit, atau tombol langsung (f/s/l/r/a/b/Esc).
+    local sel=0 i j line key fm sm lm
+    local -a items actions
     while :; do
-        local fm=$(( FOCUS_SECONDS / 60 ))
-        local sm=$(( SHORT_BREAK_SECONDS / 60 ))
-        local lm=$(( LONG_BREAK_SECONDS / 60 ))
-        
-        OVERLAY_LINES=(
-            "Current durations:"
-            "  Focus session      : $fm min"
-            "  Short break        : $sm min"
-            "  Long break         : $lm min"
+        fm=$(( FOCUS_SECONDS / 60 ))
+        sm=$(( SHORT_BREAK_SECONDS / 60 ))
+        lm=$(( LONG_BREAK_SECONDS / 60 ))
+
+        items=(
+            "$(printf '[f] Focus session       : %3d min' "$fm")"
+            "$(printf '[s] Short break         : %3d min' "$sm")"
+            "$(printf '[l] Long break          : %3d min' "$lm")"
             ''
-            'Edit durations:'
-            '[f] Change focus duration'
-            '[s] Change short break duration'
-            '[l] Change long break duration'
             '[r] Reset to defaults (25/5/15 min)'
             '[a] Save to config file'
+            '[b] Back to menu'
         )
-        draw_overlay 'CUSTOMIZE DURATIONS' 'Press [b] to go back'
-        
-        local key=''
+        actions=( focus short long '' reset save back )
+
+        OVERLAY_LINES=()
+        for (( i = 0; i < ${#items[@]}; i++ )); do
+            if (( i == sel )); then
+                line="> ${items[i]}"
+                case ${actions[i]} in
+                    focus|short|long) line+='  ◀ ▶' ;;
+                esac
+            else
+                line="  ${items[i]}"
+            fi
+            OVERLAY_LINES+=("$line")
+        done
+        draw_overlay 'CUSTOMIZE DURATIONS' '↑/↓ select · ←/→ ±1 min · Enter choose · b back'
+
+        key=''
         if ! read_key key; then
             return
         fi
 
         case $key in
+            UP)
+                j=$sel
+                while :; do
+                    j=$(( (j - 1 + ${#items[@]}) % ${#items[@]} ))
+                    [[ -n ${actions[j]} ]] && break
+                done
+                sel=$j
+                ;;
+            DOWN)
+                j=$sel
+                while :; do
+                    j=$(( (j + 1) % ${#items[@]} ))
+                    [[ -n ${actions[j]} ]] && break
+                done
+                sel=$j
+                ;;
+            LEFT)
+                case ${actions[sel]} in
+                    focus) (( fm > 1 )) && FOCUS_SECONDS=$(( (fm - 1) * 60 )) ;;
+                    short) (( sm > 1 )) && SHORT_BREAK_SECONDS=$(( (sm - 1) * 60 )) ;;
+                    long)  (( lm > 1 )) && LONG_BREAK_SECONDS=$(( (lm - 1) * 60 )) ;;
+                esac
+                ;;
+            RIGHT)
+                case ${actions[sel]} in
+                    focus) (( fm < 120 )) && FOCUS_SECONDS=$(( (fm + 1) * 60 )) ;;
+                    short) (( sm < 120 )) && SHORT_BREAK_SECONDS=$(( (sm + 1) * 60 )) ;;
+                    long)  (( lm < 120 )) && LONG_BREAK_SECONDS=$(( (lm + 1) * 60 )) ;;
+                esac
+                ;;
+            '')
+                case ${actions[sel]} in
+                    focus)
+                        prompt_for_duration "Focus session" "$fm"
+                        FOCUS_SECONDS=$(( DURATION_RESULT * 60 ))
+                        ;;
+                    short)
+                        prompt_for_duration "Short break" "$sm"
+                        SHORT_BREAK_SECONDS=$(( DURATION_RESULT * 60 ))
+                        ;;
+                    long)
+                        prompt_for_duration "Long break" "$lm"
+                        LONG_BREAK_SECONDS=$(( DURATION_RESULT * 60 ))
+                        ;;
+                    reset)
+                        FOCUS_SECONDS=1500
+                        SHORT_BREAK_SECONDS=300
+                        LONG_BREAK_SECONDS=900
+                        ;;
+                    save)
+                        save_duration_config
+                        ;;
+                    back)
+                        return
+                        ;;
+                esac
+                ;;
             f|F)
+                sel=0
                 prompt_for_duration "Focus session" "$fm"
-                fm=$DURATION_RESULT
-                FOCUS_SECONDS=$(( fm * 60 ))
+                FOCUS_SECONDS=$(( DURATION_RESULT * 60 ))
                 ;;
             s|S)
+                sel=1
                 prompt_for_duration "Short break" "$sm"
-                sm=$DURATION_RESULT
-                SHORT_BREAK_SECONDS=$(( sm * 60 ))
+                SHORT_BREAK_SECONDS=$(( DURATION_RESULT * 60 ))
                 ;;
             l|L)
+                sel=2
                 prompt_for_duration "Long break" "$lm"
-                lm=$DURATION_RESULT
-                LONG_BREAK_SECONDS=$(( lm * 60 ))
+                LONG_BREAK_SECONDS=$(( DURATION_RESULT * 60 ))
                 ;;
             r|R)
+                sel=4
                 FOCUS_SECONDS=1500
                 SHORT_BREAK_SECONDS=300
                 LONG_BREAK_SECONDS=900
                 ;;
             a|A)
+                sel=5
                 save_duration_config
                 ;;
             b|B|ESC)

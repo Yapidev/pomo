@@ -751,7 +751,7 @@ EOF
 unit_rc=$?
 assert_eq 'regresi: save_duration_config mempertahankan NOTIFY_CMD & audio di pomo.conf' "$unit_rc" '0'
 
-# ------------------------------------------ regresi: duration overlay aman dari arrow keys & Esc
+# ------------------------------------------ unit: duration overlay (↑/↓ + Enter, ←/→ ±1 min, Esc)
 unit_rc=0
 (
     set -e
@@ -760,16 +760,27 @@ unit_rc=0
     source "$POMO"
     COLOR_ENABLED=0
     TERM_COLS=80 TERM_LINES=30
-    # Panah atas (\033[A) tidak boleh memicu [a] save_duration_config;
-    # Panah bawah (\033[B) tidak boleh memicu [b] keluar sebelum 'r' dijalankan;
-    # Lalu 'r' reset dan Esc menutup overlay.
+    # Panah atas (\033[A) tidak boleh salah memicu [a] save_duration_config;
+    # Panah bawah (\033[B) kembali ke focus (sel=0); lalu 'r' reset dan Esc menutup overlay.
     FOCUS_SECONDS=1800
     show_duration_config_overlay >/dev/null < <(printf '\033[A\033[Br\033')
     [[ ! -f $CONFIG_FILE ]]
     [[ $FOCUS_SECONDS == 1500 ]]
+
+    # ←/→ mengubah durasi ±1 menit, ↓ pindah ke short break, ↑/↓ + Enter ke back (sel=6)
+    FOCUS_SECONDS=1500
+    SHORT_BREAK_SECONDS=300
+    # RIGHT (focus 25->26), DOWN (short), LEFT (short 5->4), UP, UP (wrap ke back sel=6), Enter (keluar)
+    show_duration_config_overlay >/dev/null < <(printf '\033[C\033[B\033[D\033[A\033[A\n')
+    [[ $FOCUS_SECONDS == 1560 ]]
+    [[ $SHORT_BREAK_SECONDS == 240 ]]
+
+    # ↓ 3x dari focus (0 -> 1 -> 2 -> 4 reset) + Enter mereset durasi, lalu 'b' keluar
+    show_duration_config_overlay >/dev/null < <(printf '\033[B\033[B\033[B\nb')
+    [[ $FOCUS_SECONDS == 1500 && $SHORT_BREAK_SECONDS == 300 ]]
 )
 unit_rc=$?
-assert_eq 'regresi: duration overlay mengabaikan arrow keys (tidak salah trigger a/b)' "$unit_rc" '0'
+assert_eq 'unit: duration overlay navigasi arrow (↑/↓ + Enter, ←/→ ±1 min, Esc)' "$unit_rc" '0'
 
 # ------------------------------------------ regresi: Esc di menu & prompt_continue ≠ Enter
 unit_rc=0
