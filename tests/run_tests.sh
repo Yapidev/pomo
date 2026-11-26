@@ -989,7 +989,7 @@ unit_rc=0
     TRACKER_BACKEND=hyprland
     ANIM_ENABLED=0
     ui_tr=$(draw_ui 600 1500 'FOCUS SESSION' 0 | sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g')
-    [[ $ui_tr == *'·  tracking'* ]]
+    [[ $ui_tr == *'·  Linux:ON'* ]]
     TRACKER_BACKEND=off
     ui_no=$(draw_ui 600 1500 'FOCUS SESSION' 0 | sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g')
     [[ $ui_no != *'tracking'* ]]

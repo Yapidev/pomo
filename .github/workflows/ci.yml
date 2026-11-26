@@ -18,17 +18,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check Bash syntax
+      - name: Check Bash and Python syntax
         run: |
           bash -n pomo
           bash -n tests/run_tests.sh
           bash -n build-deb.sh
+          bash -n test-pomo-windows-integration.sh
+          bash -n test-pomo-wsl-integration.sh
+          bash -n test-windows-input-integration.sh
+          bash -n test-windows-tracker.sh
+          bash -n test-wsl-process-tracker.sh
+          python3 -m py_compile wsl-process-tracker.py
 
       - name: Lint with ShellCheck
-        run: shellcheck pomo tests/run_tests.sh build-deb.sh
+        run: |
+          shellcheck pomo tests/run_tests.sh build-deb.sh
+          shellcheck test-pomo-windows-integration.sh test-pomo-wsl-integration.sh
+          shellcheck test-windows-input-integration.sh test-windows-tracker.sh
+          shellcheck test-wsl-process-tracker.sh
 
       - name: Run test suite
         run: bash tests/run_tests.sh
+
+      - name: Run WSL tracking integration tests
+        run: |
+          ./test-pomo-wsl-integration.sh
+          ./test-wsl-process-tracker.sh
 
       - name: Build Debian package
         run: ./build-deb.sh
@@ -47,6 +62,12 @@ jobs:
           test "$(dpkg-deb -f "$package" Version)" = "${version}-1"
           test "$(dpkg-deb -f "$package" Architecture)" = "all"
           test -n "$(dpkg-deb -f "$package" Maintainer)"
+
+          package_root=$(mktemp -d)
+          trap 'rm -rf "$package_root"' EXIT
+          dpkg-deb -x "$package" "$package_root"
+          test -f "$package_root/usr/lib/pomo/windows-tracker.ps1"
+          test -f "$package_root/usr/lib/pomo/wsl-process-tracker.py"
 
           echo "Package metadata verified: $package"
 

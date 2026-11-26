@@ -66,11 +66,26 @@ BREAK_SOUND="${POMO_BREAK_SOUND:-/usr/share/sounds/freedesktop/stereo/bell.oga}"
 # Tanpa keylogger dan tanpa root; otomatis fallback jika tidak ada backend desktop.
 ACTIVITY_TRACKING="${POMO_TRACKING:-on}"
 IDLE_THRESHOLD_SECONDS="${POMO_IDLE_THRESHOLD:-60}"
+WSL_IGNORED_PROCESSES="${POMO_WSL_IGNORED_PROCESSES:-systemd,_sd-pam_,bash,sh,dash,zsh,fish,powershell.exe,pwsh.exe}"
 readonly TRACK_INTERVAL=2
 TRACKER_BACKEND='none'
 SESSION_TASK=''
 IDLE_WATCHER_PID=''
 IDLE_STATE_FILE=''
+
+# Windows desktop collector (used from WSL when no Linux desktop backend exists).
+WINDOWS_TRACKER_STATUS='off'
+WINDOWS_TRACKER_PID=''
+WINDOWS_TRACKER_STOP_FILE=''
+WINDOWS_TRACKER_PAUSE_FILE=''
+WINDOWS_TRACKER_LOG=''
+
+# WSL /proc process collector (current-user processes only).
+WSL_PROCESS_STATUS='off'
+WSL_PROCESS_PID=''
+WSL_PROCESS_STOP_FILE=''
+WSL_PROCESS_PAUSE_FILE=''
+WSL_PROCESS_LOG=''
 
 # Jumlah sesi fokus sebelum berhak dapat break panjang
 readonly CYCLES_BEFORE_LONG=4
@@ -401,6 +416,15 @@ load_config() {
                 fi
                 [[ -z ${POMO_IDLE_THRESHOLD:-} ]] && IDLE_THRESHOLD_SECONDS=$value
                 ;;
+            WSL_IGNORED_PROCESSES)
+                value=${raw%%#*}
+                value=${value//$'\t'/}; value=${value// /}
+                value=${value,,}
+                if [[ $value != none ]] && [[ ! $value =~ ^[a-z0-9_.+-]+(,[a-z0-9_.+-]+)*$ ]]; then
+                    die "invalid value in $CONFIG_FILE: WSL_IGNORED_PROCESSES must be comma-separated process names or 'none'"
+                fi
+                [[ -z ${POMO_WSL_IGNORED_PROCESSES:-} ]] && WSL_IGNORED_PROCESSES=$value
+                ;;
         esac
     done < "$CONFIG_FILE"
     return 0
@@ -432,7 +456,14 @@ show_config() {
     if ! tracking_enabled; then
         printf 'Tracking    : off\n'
     elif [[ $TRACKER_BACKEND == none ]]; then
-        printf 'Tracking    : on (no desktop backend detected)\n'
+        if windows_tracker_is_wsl \
+            && command -v powershell.exe >/dev/null 2>&1 \
+            && command -v wslpath >/dev/null 2>&1 \
+            && windows_tracker_script_path >/dev/null 2>&1; then
+            printf 'Tracking    : on (Windows WSL backend ready; Linux desktop backend unavailable)\n'
+        else
+            printf 'Tracking    : on (no desktop backend detected)\n'
+        fi
     else
         local idle_src='window/cursor'
         if [[ $TRACKER_BACKEND == hyprland || $TRACKER_BACKEND == sway ]]; then
@@ -446,6 +477,14 @@ show_config() {
         fi
         printf 'Tracking    : on (backend: %s, idle: %s, cutoff: %d s)\n' \
             "$TRACKER_BACKEND" "$idle_src" "$IDLE_THRESHOLD_SECONDS"
+    fi
+    if windows_tracker_is_wsl; then
+        if tracking_enabled && command -v python3 >/dev/null 2>&1 \
+            && wsl_process_tracker_script_path >/dev/null 2>&1; then
+            printf 'WSL processes: ready (/proc, current user)\n'
+        else
+            printf 'WSL processes: unavailable (check Python 3 and wsl-process-tracker.py)\n'
+        fi
     fi
     if [[ ! -f $CONFIG_FILE ]]; then
         printf 'To change durations permanently, create the file with lines like:\n'
@@ -485,7 +524,9 @@ init_terminal() {
 }
 
 cleanup() {
-    # Dipanggil via trap EXIT: pulihkan terminal apa pun penyebab keluarnya.
+    # Dipanggil via trap EXIT: hentikan collector dan pulihkan terminal.
+    stop_windows_tracker
+    stop_wsl_process_tracker
     stop_idle_watcher
     if (( TUI_ACTIVE )); then
         TUI_ACTIVE=0
@@ -570,6 +611,10 @@ ACT_SWITCHES=0
 ACT_ACTIVE_SECS=0
 ACT_IDLE_SECS=0
 ACT_SAMPLES=0
+ACT_KEYBOARD_EVENTS=0
+ACT_MOUSE_CLICKS=0
+declare -gA ACT_WSL_PROCESS_SECS=()
+ACT_WSL_PROCESS_EVENTS=0
 ACT_LAST_APP=''
 ACT_LAST_SIG=''
 ACT_LAST_MOVE_EPOCH=0
@@ -631,6 +676,9 @@ normalize_app_name() {
         code-oss|code-url-handler|visual-studio-code) name='code' ;;
         google-chrome|google-chrome-stable)           name='chrome' ;;
         chromium-browser)                             name='chromium' ;;
+        steamwebhelper)                                name='steam' ;;
+        msedge)                                        name='edge' ;;
+        windowsterminal)                               name='windows-terminal' ;;
         '')                                           name='unknown' ;;
     esac
     if (( ${#name} > 24 )); then
@@ -654,6 +702,10 @@ activity_reset() {
     ACT_ACTIVE_SECS=0
     ACT_IDLE_SECS=0
     ACT_SAMPLES=0
+    ACT_KEYBOARD_EVENTS=0
+    ACT_MOUSE_CLICKS=0
+    ACT_WSL_PROCESS_SECS=()
+    ACT_WSL_PROCESS_EVENTS=0
     ACT_LAST_APP=''
     ACT_LAST_SIG=''
     ACT_LAST_MOVE_EPOCH=$(now)
@@ -697,6 +749,305 @@ start_idle_watcher() {
         timeout "$IDLE_THRESHOLD_SECONDS" "$cmd_idle" \
         resume "$cmd_active" </dev/null >/dev/null 2>&1 &
     IDLE_WATCHER_PID=$!
+}
+
+windows_tracker_is_wsl() {
+    [[ -n ${WSL_DISTRO_NAME:-} || -n ${WSL_INTEROP:-} ]] && return 0
+    [[ -r /proc/sys/kernel/osrelease ]] && grep -qi microsoft /proc/sys/kernel/osrelease
+}
+
+windows_tracker_script_path() {
+    local source_path=${BASH_SOURCE[0]:-$0} source_dir
+    if [[ -n ${POMO_WINDOWS_TRACKER_SCRIPT:-} && -f ${POMO_WINDOWS_TRACKER_SCRIPT} ]]; then
+        printf '%s' "$POMO_WINDOWS_TRACKER_SCRIPT"
+        return 0
+    fi
+    if [[ $source_path != */* ]]; then
+        source_path=$(command -v -- "$source_path" 2>/dev/null || printf '%s' "$source_path")
+    fi
+    source_dir=$(cd -- "$(dirname -- "$source_path")" 2>/dev/null && pwd) || source_dir=''
+    if [[ -n $source_dir && -f $source_dir/windows-tracker.ps1 ]]; then
+        printf '%s' "$source_dir/windows-tracker.ps1"
+        return 0
+    fi
+    if [[ -f /usr/lib/pomo/windows-tracker.ps1 ]]; then
+        printf '%s' '/usr/lib/pomo/windows-tracker.ps1'
+        return 0
+    fi
+    return 1
+}
+
+start_windows_tracker() {
+    WINDOWS_TRACKER_STATUS='unavailable'
+    WINDOWS_TRACKER_PID=''
+    WINDOWS_TRACKER_STOP_FILE=''
+    WINDOWS_TRACKER_PAUSE_FILE=''
+    WINDOWS_TRACKER_LOG=''
+
+    tracking_enabled || { WINDOWS_TRACKER_STATUS='off'; return 0; }
+    # Avoid double-counting if a native Linux desktop backend is already active.
+    [[ $TRACKER_BACKEND == none ]] || { WINDOWS_TRACKER_STATUS='skipped'; return 0; }
+    windows_tracker_is_wsl || return 0
+    command -v powershell.exe >/dev/null 2>&1 || return 0
+    command -v wslpath >/dev/null 2>&1 || return 0
+
+    local script script_win log_win stop_win pause_win tag attempt
+    script=$(windows_tracker_script_path) || {
+        WINDOWS_TRACKER_STATUS='missing-script'
+        return 0
+    }
+
+    mkdir -p "$DATA_DIR" 2>/dev/null || {
+        WINDOWS_TRACKER_STATUS='error'
+        return 0
+    }
+    tag="$(date +%Y%m%d-%H%M%S)-$$"
+    WINDOWS_TRACKER_LOG="$DATA_DIR/windows-$tag.jsonl"
+    WINDOWS_TRACKER_STOP_FILE="$DATA_DIR/.windows-stop-$tag"
+    WINDOWS_TRACKER_PAUSE_FILE="$DATA_DIR/.windows-pause-$tag"
+    rm -f "$WINDOWS_TRACKER_STOP_FILE" "$WINDOWS_TRACKER_PAUSE_FILE"
+
+    script_win=$(wslpath -w "$script" 2>/dev/null) || {
+        WINDOWS_TRACKER_STATUS='path-error'
+        return 0
+    }
+    log_win=$(wslpath -w "$WINDOWS_TRACKER_LOG" 2>/dev/null) || {
+        WINDOWS_TRACKER_STATUS='path-error'
+        return 0
+    }
+    stop_win=$(wslpath -w "$WINDOWS_TRACKER_STOP_FILE" 2>/dev/null) || {
+        WINDOWS_TRACKER_STATUS='path-error'
+        return 0
+    }
+    pause_win=$(wslpath -w "$WINDOWS_TRACKER_PAUSE_FILE" 2>/dev/null) || {
+        WINDOWS_TRACKER_STATUS='path-error'
+        return 0
+    }
+
+    powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+        -File "$script_win" \
+        -OutputPath "$log_win" \
+        -StopFile "$stop_win" \
+        -PauseFile "$pause_win" \
+        -IdleThresholdSeconds "$IDLE_THRESHOLD_SECONDS" \
+        -PollIntervalMs 1000 \
+        </dev/null >/dev/null 2>&1 &
+    WINDOWS_TRACKER_PID=$!
+    WINDOWS_TRACKER_STATUS='starting'
+
+    # Do not claim ACTIVE until PowerShell has written its startup record.
+    for (( attempt = 0; attempt < 20; attempt++ )); do
+        if [[ -s $WINDOWS_TRACKER_LOG ]] && grep -q '"type":"monitor_start"' "$WINDOWS_TRACKER_LOG" 2>/dev/null; then
+            WINDOWS_TRACKER_STATUS='active'
+            return 0
+        fi
+        if ! kill -0 "$WINDOWS_TRACKER_PID" 2>/dev/null; then
+            break
+        fi
+        sleep 0.1
+    done
+    WINDOWS_TRACKER_STATUS='failed'
+    stop_windows_tracker
+    WINDOWS_TRACKER_STATUS='failed'
+    return 0
+}
+
+pause_windows_tracker() {
+    if [[ $WINDOWS_TRACKER_STATUS == active && -n $WINDOWS_TRACKER_PAUSE_FILE ]]; then
+        : > "$WINDOWS_TRACKER_PAUSE_FILE" 2>/dev/null || true
+    fi
+}
+
+resume_windows_tracker() {
+    if [[ -n $WINDOWS_TRACKER_PAUSE_FILE ]]; then
+        rm -f "$WINDOWS_TRACKER_PAUSE_FILE" 2>/dev/null || true
+    fi
+}
+
+stop_windows_tracker() {
+    if [[ -n $WINDOWS_TRACKER_PID ]]; then
+        if [[ -n $WINDOWS_TRACKER_STOP_FILE ]]; then
+            : > "$WINDOWS_TRACKER_STOP_FILE" 2>/dev/null || true
+        fi
+        local attempt
+        for (( attempt = 0; attempt < 30; attempt++ )); do
+            kill -0 "$WINDOWS_TRACKER_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$WINDOWS_TRACKER_PID" 2>/dev/null; then
+            kill "$WINDOWS_TRACKER_PID" 2>/dev/null || true
+        fi
+        wait "$WINDOWS_TRACKER_PID" 2>/dev/null || true
+        WINDOWS_TRACKER_PID=''
+    fi
+    [[ -n $WINDOWS_TRACKER_STOP_FILE ]] && rm -f "$WINDOWS_TRACKER_STOP_FILE" 2>/dev/null || true
+    [[ -n $WINDOWS_TRACKER_PAUSE_FILE ]] && rm -f "$WINDOWS_TRACKER_PAUSE_FILE" 2>/dev/null || true
+    if [[ $WINDOWS_TRACKER_STATUS == active || $WINDOWS_TRACKER_STATUS == starting ]]; then
+        WINDOWS_TRACKER_STATUS='stopped'
+    fi
+}
+
+wsl_process_tracker_script_path() {
+    local source_path=${BASH_SOURCE[0]:-$0} source_dir
+    if [[ -n ${POMO_WSL_PROCESS_TRACKER_SCRIPT:-} && -f ${POMO_WSL_PROCESS_TRACKER_SCRIPT} ]]; then
+        printf '%s' "$POMO_WSL_PROCESS_TRACKER_SCRIPT"
+        return 0
+    fi
+    if [[ $source_path != */* ]]; then
+        source_path=$(command -v -- "$source_path" 2>/dev/null || printf '%s' "$source_path")
+    fi
+    source_dir=$(cd -- "$(dirname -- "$source_path")" 2>/dev/null && pwd) || source_dir=''
+    if [[ -n $source_dir && -f $source_dir/wsl-process-tracker.py ]]; then
+        printf '%s' "$source_dir/wsl-process-tracker.py"
+        return 0
+    fi
+    if [[ -f /usr/lib/pomo/wsl-process-tracker.py ]]; then
+        printf '%s' '/usr/lib/pomo/wsl-process-tracker.py'
+        return 0
+    fi
+    return 1
+}
+
+start_wsl_process_tracker() {
+    WSL_PROCESS_STATUS='unavailable'
+    WSL_PROCESS_PID=''
+    WSL_PROCESS_STOP_FILE=''
+    WSL_PROCESS_PAUSE_FILE=''
+    WSL_PROCESS_LOG=''
+
+    tracking_enabled || { WSL_PROCESS_STATUS='off'; return 0; }
+    windows_tracker_is_wsl || { WSL_PROCESS_STATUS='not-wsl'; return 0; }
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    local script tag attempt
+    script=$(wsl_process_tracker_script_path) || {
+        WSL_PROCESS_STATUS='missing-script'
+        return 0
+    }
+    mkdir -p "$DATA_DIR" 2>/dev/null || {
+        WSL_PROCESS_STATUS='error'
+        return 0
+    }
+
+    tag="$(date +%Y%m%d-%H%M%S)-$$"
+    WSL_PROCESS_LOG="$DATA_DIR/wsl-process-$tag.jsonl"
+    WSL_PROCESS_STOP_FILE="$DATA_DIR/.wsl-process-stop-$tag"
+    WSL_PROCESS_PAUSE_FILE="$DATA_DIR/.wsl-process-pause-$tag"
+    rm -f "$WSL_PROCESS_STOP_FILE" "$WSL_PROCESS_PAUSE_FILE"
+
+    python3 "$script" \
+        --output "$WSL_PROCESS_LOG" \
+        --stop-file "$WSL_PROCESS_STOP_FILE" \
+        --pause-file "$WSL_PROCESS_PAUSE_FILE" \
+        --ignore-processes "$WSL_IGNORED_PROCESSES" \
+        --interval-ms 1000 \
+        </dev/null >/dev/null 2>&1 &
+    WSL_PROCESS_PID=$!
+    WSL_PROCESS_STATUS='starting'
+
+    for (( attempt = 0; attempt < 20; attempt++ )); do
+        if [[ -s $WSL_PROCESS_LOG ]] && grep -q '"type":"monitor_start"' "$WSL_PROCESS_LOG" 2>/dev/null; then
+            WSL_PROCESS_STATUS='active'
+            return 0
+        fi
+        if ! kill -0 "$WSL_PROCESS_PID" 2>/dev/null; then
+            break
+        fi
+        sleep 0.1
+    done
+    WSL_PROCESS_STATUS='failed'
+    stop_wsl_process_tracker
+    WSL_PROCESS_STATUS='failed'
+    return 0
+}
+
+pause_wsl_process_tracker() {
+    if [[ $WSL_PROCESS_STATUS == active && -n $WSL_PROCESS_PAUSE_FILE ]]; then
+        : > "$WSL_PROCESS_PAUSE_FILE" 2>/dev/null || true
+    fi
+}
+
+resume_wsl_process_tracker() {
+    if [[ -n $WSL_PROCESS_PAUSE_FILE ]]; then
+        rm -f "$WSL_PROCESS_PAUSE_FILE" 2>/dev/null || true
+    fi
+}
+
+stop_wsl_process_tracker() {
+    if [[ -n $WSL_PROCESS_PID ]]; then
+        if [[ -n $WSL_PROCESS_STOP_FILE ]]; then
+            : > "$WSL_PROCESS_STOP_FILE" 2>/dev/null || true
+        fi
+        local attempt
+        for (( attempt = 0; attempt < 30; attempt++ )); do
+            kill -0 "$WSL_PROCESS_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$WSL_PROCESS_PID" 2>/dev/null; then
+            kill "$WSL_PROCESS_PID" 2>/dev/null || true
+        fi
+        wait "$WSL_PROCESS_PID" 2>/dev/null || true
+        WSL_PROCESS_PID=''
+    fi
+    [[ -n $WSL_PROCESS_STOP_FILE ]] && rm -f "$WSL_PROCESS_STOP_FILE" 2>/dev/null || true
+    [[ -n $WSL_PROCESS_PAUSE_FILE ]] && rm -f "$WSL_PROCESS_PAUSE_FILE" 2>/dev/null || true
+    if [[ $WSL_PROCESS_STATUS == active || $WSL_PROCESS_STATUS == starting ]]; then
+        WSL_PROCESS_STATUS='stopped'
+    fi
+}
+
+import_wsl_process_activity() {
+    [[ -n $WSL_PROCESS_LOG && -f $WSL_PROCESS_LOG ]] || return 0
+    local line process seconds
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line == *'"type":"process_seen"'* ]]; then
+            ACT_WSL_PROCESS_EVENTS=$(( ACT_WSL_PROCESS_EVENTS + 1 ))
+        fi
+        [[ $line == *'"type":"process_usage"'* ]] || continue
+        process=$(sed -n 's/.*"process":"\([a-zA-Z0-9_.+-]*\)".*/\1/p' <<< "$line")
+        seconds=$(sed -n 's/.*"runtime_seconds":\([0-9][0-9]*\).*/\1/p' <<< "$line")
+        [[ -n $process && $seconds =~ ^[0-9]+$ ]] || continue
+        ACT_WSL_PROCESS_SECS[$process]=$(( ${ACT_WSL_PROCESS_SECS[$process]:-0} + seconds ))
+    done < "$WSL_PROCESS_LOG"
+}
+
+wsl_process_sorted() {
+    (( ${#ACT_WSL_PROCESS_SECS[@]} == 0 )) && return 0
+    local process
+    for process in "${!ACT_WSL_PROCESS_SECS[@]}"; do
+        printf '%d|%s\n' "${ACT_WSL_PROCESS_SECS[$process]}" "$process"
+    done | sort -t'|' -k1,1nr -k2,2
+}
+
+import_windows_activity() {
+    [[ -n $WINDOWS_TRACKER_LOG && -f $WINDOWS_TRACKER_LOG ]] || return 0
+    local line app idle idle_ms keys clicks
+    while IFS= read -r line || [[ -n $line ]]; do
+        # Input-only flushes are written immediately before pause/stop boundaries.
+        if [[ $line == *'"type":"input_sample"'* ]]; then
+            keys=$(sed -n 's/.*"keyboard_events":\([0-9][0-9]*\).*/\1/p' <<< "$line")
+            clicks=$(sed -n 's/.*"mouse_clicks":\([0-9][0-9]*\).*/\1/p' <<< "$line")
+            [[ $keys =~ ^[0-9]+$ ]] || keys=0
+            [[ $clicks =~ ^[0-9]+$ ]] || clicks=0
+            ACT_KEYBOARD_EVENTS=$(( ACT_KEYBOARD_EVENTS + keys ))
+            ACT_MOUSE_CLICKS=$(( ACT_MOUSE_CLICKS + clicks ))
+            continue
+        fi
+        [[ $line == *'"type":"sample"'* ]] || continue
+        app=${line#*'"app":"'}
+        app=${app%%'"'*}
+        [[ -n $app && $app != "$line" ]] || continue
+        app=$(normalize_app_name "$app")
+        idle_ms=0
+        [[ $line == *'"idle":true'* ]] && idle_ms=$(( IDLE_THRESHOLD_SECONDS * 1000 ))
+        keys=$(sed -n 's/.*"keyboard_events":\([0-9][0-9]*\).*/\1/p' <<< "$line")
+        clicks=$(sed -n 's/.*"mouse_clicks":\([0-9][0-9]*\).*/\1/p' <<< "$line")
+        [[ $keys =~ ^[0-9]+$ ]] || keys=0
+        [[ $clicks =~ ^[0-9]+$ ]] || clicks=0
+        ACT_KEYBOARD_EVENTS=$(( ACT_KEYBOARD_EVENTS + keys ))
+        ACT_MOUSE_CLICKS=$(( ACT_MOUSE_CLICKS + clicks ))
+        activity_record_sample "$app" '' '' "$idle_ms" 1 "$(now)"
+    done < "$WINDOWS_TRACKER_LOG"
 }
 
 read_wayland_idle_ms() {
@@ -842,20 +1193,27 @@ activity_sorted_apps() {
 log_activity() {
     # $1 durasi sesi fokus (detik). Hanya simpan jika ada sampel atau task.
     local duration=$1
-    if (( ACT_SAMPLES == 0 )) && [[ -z $SESSION_TASK ]]; then
+    if (( ACT_SAMPLES == 0 && ACT_WSL_PROCESS_EVENTS == 0 && ${#ACT_WSL_PROCESS_SECS[@]} == 0 )) \
+        && [[ -z $SESSION_TASK ]]; then
         return 0
     fi
-    local clean_task apps_csv='' secs app
+    local clean_task apps_csv='' wsl_process_csv='' secs app process
     clean_task=$(sanitize_field "$SESSION_TASK")
     while IFS='|' read -r secs app; do
         [[ -n $app ]] || continue
         if [[ -n $apps_csv ]]; then apps_csv+=','; fi
         apps_csv+="${app}=${secs}"
     done < <(activity_sorted_apps)
+    while IFS='|' read -r secs process; do
+        [[ -n $process ]] || continue
+        if [[ -n $wsl_process_csv ]]; then wsl_process_csv+=','; fi
+        wsl_process_csv+="${process}=${secs}"
+    done < <(wsl_process_sorted)
     mkdir -p "$DATA_DIR"
-    printf '%s|%s|%s|%s|%d|%d|%d|%s\n' \
+    printf '%s|%s|%s|%s|%d|%d|%d|%s|%d|%d|%s\n' \
         "$(date +%F)" "$(date +%H:%M)" "$duration" "$clean_task" \
-        "$ACT_SWITCHES" "$ACT_ACTIVE_SECS" "$ACT_IDLE_SECS" "$apps_csv" >> "$ACTIVITY_FILE"
+        "$ACT_SWITCHES" "$ACT_ACTIVE_SECS" "$ACT_IDLE_SECS" "$apps_csv" \
+        "$ACT_KEYBOARD_EVENTS" "$ACT_MOUSE_CLICKS" "$wsl_process_csv" >> "$ACTIVITY_FILE"
 }
 
 # ============================== STATUS SESI =================================
@@ -1347,8 +1705,27 @@ draw_ui() {
     local info
     printf -v info 'Elapsed %02d:%02d of %02d:%02d' \
         $(( elapsed / 60 )) $(( elapsed % 60 )) $(( total / 60 )) $(( total % 60 ))
-    if [[ $CURRENT_MODE == focus && $TRACKER_BACKEND != none && $TRACKER_BACKEND != off ]]; then
-        info+='  ·  tracking'
+    if [[ $CURRENT_MODE == focus ]]; then
+        local monitor_badges=''
+        if [[ $WINDOWS_TRACKER_STATUS == active ]]; then
+            monitor_badges='Win:ON'
+        elif [[ $TRACKER_BACKEND != none && $TRACKER_BACKEND != off ]]; then
+            monitor_badges='Linux:ON'
+        elif [[ $WINDOWS_TRACKER_STATUS == failed || $WINDOWS_TRACKER_STATUS == missing-script || $WINDOWS_TRACKER_STATUS == path-error ]]; then
+            monitor_badges='Win:OFF'
+        fi
+        if [[ $WSL_PROCESS_STATUS == active ]]; then
+            [[ -n $monitor_badges ]] && monitor_badges+=' '
+            monitor_badges+='WSL:ON'
+        elif [[ $WSL_PROCESS_STATUS == failed || $WSL_PROCESS_STATUS == missing-script ]]; then
+            [[ -n $monitor_badges ]] && monitor_badges+=' '
+            monitor_badges+='WSL:OFF'
+        fi
+        if [[ -n $monitor_badges ]]; then
+            info+="  ·  $monitor_badges"
+        elif [[ $TRACKER_BACKEND != none && $TRACKER_BACKEND != off ]]; then
+            info+='  ·  tracking'
+        fi
     fi
     lp=$(( (card_inner - ${#info}) / 2 )); (( lp < 0 )) && lp=0
     rp=$(( card_inner - ${#info} - lp )); (( rp < 0 )) && rp=0
@@ -1433,6 +1810,11 @@ draw_focus_recap() {
         else
             body_styled+=("  ${C_DIM}Idle     :${C_RESET} ${C_DIM}${idle_line}${C_RESET}")
         fi
+        if (( ACT_KEYBOARD_EVENTS > 0 || ACT_MOUSE_CLICKS > 0 )); then
+            local input_line="${ACT_KEYBOARD_EVENTS} keyboard events · ${ACT_MOUSE_CLICKS} mouse clicks"
+            body_plain+=("  Input    : $input_line")
+            body_styled+=("  ${C_DIM}Input    :${C_RESET} ${C_CYAN}${ACT_KEYBOARD_EVENTS}${C_RESET}${C_DIM} keyboard events · ${C_RESET}${C_CYAN}${ACT_MOUSE_CLICKS}${C_RESET}${C_DIM} mouse clicks${C_RESET}")
+        fi
 
         body_plain+=('')
         body_styled+=('')
@@ -1484,10 +1866,27 @@ draw_focus_recap() {
         if [[ $TRACKER_BACKEND == off ]]; then
             body_plain+=('  Activity tracking is turned off.')
             body_styled+=("  ${C_DIM}Activity tracking is turned off.${C_RESET}")
-        elif [[ $TRACKER_BACKEND == none ]]; then
+        elif [[ $TRACKER_BACKEND == none && $ACT_SAMPLES == 0 ]]; then
             body_plain+=('  No desktop window tracker detected.')
             body_styled+=("  ${C_DIM}No desktop window tracker detected.${C_RESET}")
         fi
+    fi
+
+    if (( ${#ACT_WSL_PROCESS_SECS[@]} > 0 )); then
+        body_plain+=('')
+        body_styled+=('')
+        body_plain+=('  WSL processes (runtime):')
+        body_styled+=("  ${C_DIM}WSL processes (runtime):${C_RESET}")
+        local wsl_shown=0 wsl_secs wsl_name wsl_disp
+        while IFS='|' read -r wsl_secs wsl_name; do
+            [[ -n $wsl_name && $wsl_secs =~ ^[0-9]+$ ]] || continue
+            (( wsl_shown >= 8 )) && break
+            wsl_shown=$(( wsl_shown + 1 ))
+            wsl_disp=$wsl_name
+            (( ${#wsl_disp} > 16 )) && wsl_disp="${wsl_disp:0:15}…"
+            body_plain+=("    $(printf '%-16s' "$wsl_disp") $(format_duration_short "$wsl_secs")")
+            body_styled+=("    ${C_WHITE}$(printf '%-16s' "$wsl_disp")${C_RESET} ${C_CYAN}$(format_duration_short "$wsl_secs")${C_RESET}")
+        done < <(wsl_process_sorted)
     fi
 
     local total_h=$(( ${#body_plain[@]} + 6 ))
@@ -2197,11 +2596,15 @@ run_timer() {
             p|P)
                 if (( paused )); then
                     paused=0
+                    resume_windows_tracker
+                    resume_wsl_process_tracker
                     end=$(( $(now) + frozen ))
                     ACT_LAST_SAMPLE_EPOCH=0
                     [[ -n $IDLE_STATE_FILE && -f $IDLE_STATE_FILE ]] && printf '0\n' > "$IDLE_STATE_FILE" 2>/dev/null || true
                 else
                     paused=1
+                    pause_windows_tracker
+                    pause_wsl_process_tracker
                 fi
                 ;;
             s|S)
@@ -2211,6 +2614,8 @@ run_timer() {
                 # Buka menu; bekukan timer selama menu terbuka
                 menu_was_paused=$paused
                 paused=1
+                pause_windows_tracker
+                pause_wsl_process_tracker
                 MENU_RESULT=''
                 open_menu
                 if (( THEME_CHANGED )); then
@@ -2227,6 +2632,8 @@ run_timer() {
                         # Lanjutkan sesi dengan sisa waktu yang sama
                         if (( menu_was_paused == 0 )); then
                             paused=0
+                            resume_windows_tracker
+                            resume_wsl_process_tracker
                             end=$(( $(now) + frozen ))
                             ACT_LAST_SAMPLE_EPOCH=0
                             [[ -n $IDLE_STATE_FILE && -f $IDLE_STATE_FILE ]] && printf '0\n' > "$IDLE_STATE_FILE" 2>/dev/null || true
@@ -2325,6 +2732,8 @@ run_cycle() {
             detect_tracker_backend
             activity_reset
             start_idle_watcher
+            start_windows_tracker
+            start_wsl_process_tracker
         fi
 
         # Indikator progres siklus untuk layar timer (● = fokus selesai di
@@ -2345,6 +2754,12 @@ run_cycle() {
             resume_remaining=0
         else
             run_timer "$duration" "$label" || rc=$?
+        fi
+        if [[ $mode == focus ]]; then
+            stop_windows_tracker
+            import_windows_activity
+            stop_wsl_process_tracker
+            import_wsl_process_activity
         fi
         stop_idle_watcher
         clear_state
@@ -2559,7 +2974,7 @@ show_stats() {
         local -A today_apps=()
         local -a pairs=()
         local a_date a_csv pair app_k app_v total_app_secs=0
-        while IFS='|' read -r a_date _ _ _ _ _ _ a_csv || [[ -n ${a_date:-} ]]; do
+        while IFS='|' read -r a_date _ _ _ _ _ _ a_csv _ _ || [[ -n ${a_date:-} ]]; do
             [[ $a_date == "$today" && -n ${a_csv:-} ]] || continue
             IFS=',' read -ra pairs <<< "$a_csv"
             for pair in "${pairs[@]}"; do
@@ -2625,8 +3040,8 @@ show_recap() {
             printf 'No focus activity recaps recorded yet.\n'
             return 0
         fi
-        local d tm dur task sw act idle csv
-        IFS='|' read -r d tm dur task sw act idle csv <<< "$last_line"
+        local d tm dur task sw act idle csv key_events mouse_clicks wsl_csv
+        IFS='|' read -r d tm dur task sw act idle csv key_events mouse_clicks wsl_csv <<< "$last_line"
         local dur_fmt tot_t act_pct=100
         dur_fmt=$(format_duration_short "${dur:-0}")
         tot_t=$(( ${act:-0} + ${idle:-0} ))
@@ -2640,6 +3055,10 @@ show_recap() {
             idle_fmt=$(format_duration_short "${idle:-0}")
             printf '  Activity : %s%d%% active%s · %d app switches\n' "$C_GREEN" "$act_pct" "$C_RESET" "${sw:-0}"
             printf '  Idle     : %s%d%% idle%s (%s)\n' "$C_YELLOW" "$idle_pct" "$C_RESET" "$idle_fmt"
+        fi
+        if [[ ${key_events:-0} =~ ^[0-9]+$ && ${mouse_clicks:-0} =~ ^[0-9]+$ ]] \
+            && (( ${key_events:-0} > 0 || ${mouse_clicks:-0} > 0 )); then
+            printf '  Input    : %s keyboard events · %s mouse clicks\n' "$key_events" "$mouse_clicks"
         fi
         if [[ -n ${csv:-} ]]; then
             printf '  Apps used:\n'
@@ -2665,19 +3084,47 @@ show_recap() {
                     "$C_GREEN" "$bar_s" "$C_RESET"
             done
         fi
+        if [[ -n ${wsl_csv:-} ]]; then
+            printf '  WSL processes (observed runtime):\n'
+            local -a wsl_pairs=()
+            local wsl_pair wsl_name wsl_secs
+            IFS=',' read -ra wsl_pairs <<< "$wsl_csv"
+            for wsl_pair in "${wsl_pairs[@]}"; do
+                [[ $wsl_pair == *=* ]] || continue
+                wsl_name=${wsl_pair%%=*}
+                wsl_secs=${wsl_pair#*=}
+                [[ -n $wsl_name && $wsl_secs =~ ^[0-9]+$ ]] || continue
+                printf '    %s%-16s%s %s\n' "$C_CYAN" "$wsl_name" "$C_RESET" "$(format_duration_short "$wsl_secs")"
+            done
+        fi
         return 0
     fi
 
-    local -A agg_apps=()
-    local count=0 total_sw=0 total_act=0 total_idle=0 total_app_secs=0
-    local d tm dur task sw act idle csv
+    local -A agg_apps=() agg_wsl_processes=()
+    local count=0 total_sw=0 total_act=0 total_idle=0 total_app_secs=0 total_keys=0 total_clicks=0 total_wsl_proc_secs=0
+    local d tm dur task sw act idle csv key_events mouse_clicks wsl_csv
     local -a session_lines=()
-    while IFS='|' read -r d tm dur task sw act idle csv || [[ -n ${d:-} ]]; do
+    while IFS='|' read -r d tm dur task sw act idle csv key_events mouse_clicks wsl_csv || [[ -n ${d:-} ]]; do
         [[ $d == "$today" ]] || continue
         count=$(( count + 1 ))
         total_sw=$(( total_sw + ${sw:-0} ))
         total_act=$(( total_act + ${act:-0} ))
         total_idle=$(( total_idle + ${idle:-0} ))
+        [[ ${key_events:-} =~ ^[0-9]+$ ]] && total_keys=$(( total_keys + key_events ))
+        [[ ${mouse_clicks:-} =~ ^[0-9]+$ ]] && total_clicks=$(( total_clicks + mouse_clicks ))
+        if [[ -n ${wsl_csv:-} ]]; then
+            local -a wsl_pairs=()
+            local wsl_pair wsl_name wsl_secs
+            IFS=',' read -ra wsl_pairs <<< "$wsl_csv"
+            for wsl_pair in "${wsl_pairs[@]}"; do
+                [[ $wsl_pair == *=* ]] || continue
+                wsl_name=${wsl_pair%%=*}
+                wsl_secs=${wsl_pair#*=}
+                [[ -n $wsl_name && $wsl_secs =~ ^[0-9]+$ ]] || continue
+                agg_wsl_processes[$wsl_name]=$(( ${agg_wsl_processes[$wsl_name]:-0} + wsl_secs ))
+                total_wsl_proc_secs=$(( total_wsl_proc_secs + wsl_secs ))
+            done
+        fi
         local dur_fmt top_app='-' s_line
         dur_fmt=$(format_duration_short "${dur:-0}")
         if [[ -n ${csv:-} ]]; then
@@ -2700,6 +3147,10 @@ show_recap() {
         s_line="  $tm  $dur_fmt"
         [[ -n ${task:-} ]] && s_line+="  [$task]"
         s_line+="  · top: $top_app  · ${sw:-0} switches"
+        if [[ ${key_events:-0} =~ ^[0-9]+$ && ${mouse_clicks:-0} =~ ^[0-9]+$ ]] \
+            && (( ${key_events:-0} > 0 || ${mouse_clicks:-0} > 0 )); then
+            s_line+="  · ${key_events} keys / ${mouse_clicks} clicks"
+        fi
         session_lines+=("$s_line")
     done < "$ACTIVITY_FILE"
 
@@ -2718,6 +3169,9 @@ show_recap() {
         idle_fmt=$(format_duration_short "$total_idle")
         printf '  Activity : %s%d%% active%s · %d total app switches\n' "$C_GREEN" "$act_pct" "$C_RESET" "$total_sw"
         printf '  Idle     : %s%d%% idle%s (%s)\n' "$C_YELLOW" "$idle_pct" "$C_RESET" "$idle_fmt"
+    fi
+    if (( total_keys > 0 || total_clicks > 0 )); then
+        printf '  Input    : %d keyboard events · %d mouse clicks\n' "$total_keys" "$total_clicks"
     fi
 
     printf '\n%sSessions today%s\n' "$C_BOLD" "$C_RESET"
@@ -2745,6 +3199,22 @@ show_recap() {
         done < <(
             for ak in "${!agg_apps[@]}"; do
                 printf '%d|%s\n' "${agg_apps[$ak]}" "$ak"
+            done | sort -t'|' -k1,1nr -k2,2
+        )
+    fi
+
+    if (( total_wsl_proc_secs > 0 )); then
+        printf '\n%sWSL Process Activity Today%s (cumulative process runtime)\n' "$C_BOLD" "$C_RESET"
+        local wsl_s wsl_n wsl_d shown_wsl=0
+        while IFS='|' read -r wsl_s wsl_n; do
+            [[ -n $wsl_n ]] || continue
+            (( shown_wsl >= 8 )) && break
+            shown_wsl=$(( shown_wsl + 1 ))
+            wsl_d=$(format_duration_short "$wsl_s")
+            printf '  %s%-18s%s %s\n' "$C_CYAN" "$wsl_n" "$C_RESET" "$wsl_d"
+        done < <(
+            for wsl_n in "${!agg_wsl_processes[@]}"; do
+                printf '%d|%s\n' "${agg_wsl_processes[$wsl_n]}" "$wsl_n"
             done | sort -t'|' -k1,1nr -k2,2
         )
     fi
@@ -2790,7 +3260,9 @@ Data:
   Completed sessions are logged to
   ~/.local/share/pomo/history.log   (format: date|type|seconds)
   Focus activity recaps are logged to
-  ~/.local/share/pomo/activity.log  (apps, switches, active/idle; no keylogging)
+  ~/.local/share/pomo/activity.log  (apps, switches, active/idle, input counts, WSL processes)
+  WSL process events are stored in ~/.local/share/pomo/wsl-process-*.jsonl
+  and include process names for the current Linux user only.
 
 Status bar:
   "pomo status" prints one line, e.g. "focus 12:34" or "short break 03:21
