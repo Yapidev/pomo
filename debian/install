@@ -1,1 +1,3 @@
 pomo usr/bin
+windows-tracker.ps1 usr/lib/pomo
+wsl-process-tracker.py usr/lib/pomo

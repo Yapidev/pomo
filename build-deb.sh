@@ -24,12 +24,15 @@ trap 'rm -rf "$stage"' EXIT
 out="build/pomo_${deb_version}_${arch}.deb"
 
 rm -rf build
-mkdir -p "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/share/doc/pomo" build
+mkdir -p "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/lib/pomo" "$stage/usr/share/doc/pomo" build
 chmod 755 "$stage/DEBIAN"
-
 
 # 1) Script utama ke /usr/bin/pomo
 install -m 755 pomo "$stage/usr/bin/pomo"
+
+# 2) Helper Windows dan WSL ke /usr/lib/pomo
+install -m 644 windows-tracker.ps1 "$stage/usr/lib/pomo/windows-tracker.ps1"
+install -m 644 wsl-process-tracker.py "$stage/usr/lib/pomo/wsl-process-tracker.py"
 
 # 2) Metadata paket: paragraf binary (Package:) dari debian/control,
 #    plus Version: dari POMO_VERSION (paragraf binary di debian/control
