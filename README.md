@@ -258,6 +258,24 @@ estimate — then show a Focus Recap Card when the session finishes.
   `ACTIVITY_TRACKING=off` in `~/.config/pomo/pomo.conf`. You can also tune
   the idle cutoff with `IDLE_THRESHOLD_SECONDS=60` (or `POMO_IDLE_THRESHOLD`).
 
+## Windows + WSL Activity Tracking
+
+When running inside WSL with the required helper scripts available, Pomo supports two additional activity collectors:
+
+- **Windows Activity Tracker:** records foreground application activity, idle time, and aggregate keyboard and mouse event counts.
+- **WSL Process Tracker:** records process names and observed runtime for processes owned by the current Linux user.
+
+Both collectors operate during focus sessions and pause when the session is paused or the menu is open.
+
+**Privacy is a priority:**
+- No typed text or key codes are recorded.
+- No window titles, screenshots, or clipboard contents are collected.
+- No process command-line arguments or environment variables are read.
+
+The Windows and WSL helper scripts are included in the repository and Debian package. The single-file installation command above downloads only `pomo`, so it does not install these optional tracking helpers.
+
+For installation requirements, configuration, data storage, testing, and limitations, see [Windows + WSL Integration](README-WINDOWS.md).
+
 ## Where is my data?
 
 Completed sessions are appended to
