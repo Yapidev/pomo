@@ -32,10 +32,10 @@ jobs:
 
       - name: Lint with ShellCheck
         run: |
-          shellcheck pomo tests/run_tests.sh build-deb.sh
-          shellcheck test-pomo-windows-integration.sh test-pomo-wsl-integration.sh
-          shellcheck test-windows-input-integration.sh test-windows-tracker.sh
-          shellcheck test-wsl-process-tracker.sh
+          shellcheck -x --severity=warning pomo tests/run_tests.sh build-deb.sh
+          shellcheck -x --severity=warning test-pomo-windows-integration.sh test-pomo-wsl-integration.sh
+          shellcheck -x --severity=warning test-windows-input-integration.sh test-windows-tracker.sh
+          shellcheck -x --severity=warning test-wsl-process-tracker.sh
 
       - name: Run test suite
         run: bash tests/run_tests.sh

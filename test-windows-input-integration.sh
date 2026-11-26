@@ -13,6 +13,7 @@ trap 'rm -rf "$TMP"' EXIT
 export XDG_DATA_HOME="$TMP/data"
 mkdir -p "$XDG_DATA_HOME/pomo"
 # Source the app; initialize its global state and provide a synthetic collector log.
+# shellcheck source=./pomo
 source "$POMO"
 WINDOWS_TRACKER_LOG="$TMP/windows.jsonl"
 IDLE_THRESHOLD_SECONDS=60
